@@ -875,6 +875,7 @@ class PipelineWorker:
                     f"({', '.join(item_colors)}) — skipped: "
                     f"{', '.join(c for c in colors if c not in item_colors)}", 'info'
                 )
+            is_foot_state = bool(it.get('foot_states', []))
             for color in item_colors:
                 yaml_lines.append(f"Items.{mod_base}_{name}_{color}:")
                 yaml_lines.append(f"  $base: Items.{slot}")
