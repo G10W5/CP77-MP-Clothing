@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+logs/
+template_test/
+template_test_shirt/
+test_*/
+test_*
+Casual_Pants/
+Blender_Exports/
+cpmp_config.json
+*.cpmodproj
+dump_*/
+cpmp-og.py
+CPMP_tags_and_ui_fixes_handoff.md
