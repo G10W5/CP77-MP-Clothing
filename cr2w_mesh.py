@@ -803,6 +803,17 @@ def import_glb_to_mesh(
             byte_offsets = chunk_vertices.get('byteOffsets', {})
             byte_offsets['Elements'] = [s0, s1, s2, s3, 0]
             chunk_vertices['byteOffsets'] = byte_offsets
+            # Update slotStrides to match actual vertex format (template may have wrong values)
+            slot_strides = chunk_vertices.get('slotStrides', {})
+            if slot_strides:
+                stride_elements = slot_strides.get('Elements', [])
+                if stride_elements:
+                    stride_elements[0] = stream0_per_vert
+                    stride_elements[1] = stream1_per_vert
+                    stride_elements[2] = stream2_per_vert
+                    stride_elements[3] = stream3_per_vert
+                    slot_strides['Elements'] = stride_elements
+                    chunk_vertices['slotStrides'] = slot_strides
             chunk_info['chunkVertices'] = chunk_vertices
 
             chunk_indices = chunk_info.get('chunkIndices', {})
