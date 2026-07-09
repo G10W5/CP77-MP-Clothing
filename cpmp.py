@@ -664,13 +664,23 @@ class PipelineWorker:
             self._ensure_dir(dest)
             item_name = it['name']
 
+            FOOT_STATE_MARKERS = ('flat', 'lifted', 'heel')
             for glb in it['glbs']:
                 stem = glb.stem
                 new_stem = None
+                foot_prefix = ''
 
                 for old_suf, new_suf in body_suffixes:
                     if stem.lower().endswith(old_suf):
-                        new_stem = f"{item_name}_{new_suf}"
+                        rest = stem[:-len(old_suf)]
+                        for fs in FOOT_STATE_MARKERS:
+                            if rest.lower().rstrip('_').endswith(fs):
+                                foot_prefix = fs
+                                break
+                        if foot_prefix:
+                            new_stem = f"{item_name}_{foot_prefix}_{new_suf}"
+                        else:
+                            new_stem = f"{item_name}_{new_suf}"
                         break
 
                 if not new_stem:
@@ -1098,6 +1108,8 @@ class PipelineWorker:
             name = it['name']
             entity_name = f"{mod_base}_{name}_root"
             out_dir = Path(output_dir) / mod_base / 'source' / 'archive' / mod_base / name
+            is_foot_state = bool(it.get('foot_states', []))
+            item_colors = [c for c in colors if c in it.get('found_variants', colors)]
 
             # 1. Assemble Root Entity
             root = copy.deepcopy(tpl_root)
@@ -1124,6 +1136,17 @@ class PipelineWorker:
 
             with open(out_dir / f"{mod_base}_{name}_root.ent.json", 'w') as f:
                 json.dump(root, f, indent=2)
+
+            # 1b. For foot-state items, also generate per-color root entities
+            #     (YAML references entityName: {mod_base}_{name}_{color})
+            if is_foot_state:
+                for color in item_colors:
+                    color_root = copy.deepcopy(root)
+                    color_entity = f"{mod_base}_{name}_{color}"
+                    for app_ref in color_root['Data']['RootChunk'].get('appearances', []):
+                        app_ref['name']['$value'] = color_entity
+                    with open(out_dir / f"{mod_base}_{name}_{color}.ent.json", 'w') as f:
+                        json.dump(color_root, f, indent=2)
 
             # 2. Assemble Appearance Resources
             app = copy.deepcopy(tpl_app)
@@ -1174,6 +1197,59 @@ class PipelineWorker:
             with open(out_dir / f"{mod_base}_{name}_appearance.app.json", 'w') as f:
                 json.dump(app, f, indent=2)
 
+            # 2b. For foot-state items, generate per-color appearance files
+            #     with per-foot-state appearance definitions.
+            #     YAML: appearanceName: {mod_base}_{name}_{color}_  (trailing _)
+            #     Game appends LegsState suffix: {color}_Flat, {color}_Lifted, {color}_Heel
+            if is_foot_state:
+                for color in item_colors:
+                    color_app = copy.deepcopy(app)
+                    color_app_defs = color_app['Data']['RootChunk'].setdefault('appearances', [])
+                    color_app_defs.clear()
+                    # Map of foot-state suffix → mesh entity path
+                    fs_suffix_map = {
+                        'flat': ('Flat', 'FlatShoes'),
+                        'lifted': ('Lifted',),
+                        'heel': ('Heel',),
+                    }
+                    hid = 0
+                    # Default appearance (no suffix) = lifted mesh entity
+                    default_def = copy.deepcopy(new_def)
+                    default_def['name'] = {"$type": "CName", "$storage": "string", "$value": f"{mod_base}_{name}_{color}"}
+                    default_def['partsValues'][0]['resource']['DepotPath']['$value'] = (
+                        f"{mod_base}\\{name}\\{mod_base}_{name}_mesh_entity.ent"
+                    )
+                    color_app_defs.append({"HandleId": str(hid), "Data": default_def})
+                    hid += 1
+                    # Per-foot-state appearances
+                    for fs, suffixes in fs_suffix_map.items():
+                        fs_def = copy.deepcopy(new_def)
+                        fs_def['name'] = {"$type": "CName", "$storage": "string", "$value": f"{mod_base}_{name}_{color}_{suffixes[0]}"}
+                        fs_def['partsValues'][0]['resource']['DepotPath']['$value'] = (
+                            f"{mod_base}\\{name}\\{mod_base}_{name}_mesh_entity_{fs}.ent"
+                        )
+                        # FlatShoes shares Flat appearance
+                        for alias in suffixes[1:]:
+                            alias_def = copy.deepcopy(fs_def)
+                            alias_def['name'] = {"$type": "CName", "$storage": "string", "$value": f"{mod_base}_{name}_{color}_{alias}"}
+                            color_app_defs.append({"HandleId": str(hid), "Data": alias_def})
+                            hid += 1
+                        color_app_defs.append({"HandleId": str(hid), "Data": fs_def})
+                        hid += 1
+                    with open(out_dir / f"{mod_base}_{name}_{color}_appearance.app.json", 'w') as f:
+                        json.dump(color_app, f, indent=2)
+                    # Update per-color entity to reference per-color appearance
+                    color_ent_path = out_dir / f"{mod_base}_{name}_{color}.ent.json"
+                    if color_ent_path.exists():
+                        with open(color_ent_path, 'r', encoding='utf-8') as f:
+                            color_ent = json.load(f)
+                        for app_ref in color_ent['Data']['RootChunk'].get('appearances', []):
+                            app_ref['appearanceResource']['DepotPath']['$value'] = (
+                                f"{mod_base}\\{name}\\{mod_base}_{name}_{color}_appearance.app"
+                            )
+                        with open(color_ent_path, 'w', encoding='utf-8') as f:
+                            json.dump(color_ent, f, indent=2)
+
             # 3. Assemble Mesh Entity
             mesh_ent = copy.deepcopy(tpl_mesh_ent)
             mesh_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{{body}}.mesh"
@@ -1200,6 +1276,23 @@ class PipelineWorker:
                     chunk['name'] = {"$type": "CName", "$storage": "string", "$value": f"{name}_mesh"}
             with open(out_dir / f"{mod_base}_{name}_mesh_entity.ent.json", 'w') as f:
                 json.dump(mesh_ent, f, indent=2)
+
+            # 3b. Generate per-foot-state mesh entities for Leg-slot items
+            foot_states = it.get('foot_states', [])
+            if foot_states and it.get('slot') == 'GenericLegClothing':
+                for foot_state in foot_states:
+                    fs_ent = copy.deepcopy(mesh_ent)
+                    fs_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{foot_state}_{{body}}.mesh"
+                    for comp in fs_ent['Data']['RootChunk'].get('components', []):
+                        if comp.get('$type') in ('entGarmentSkinnedMeshComponent', 'entSkinnedMeshComponent'):
+                            comp['mesh']['DepotPath'] = {"$type": "ResourcePath", "$storage": "string", "$value": fs_depot}
+                    for chunk in fs_ent['Data']['RootChunk'].get('compiledData', {}).get('Data', {}).get('Chunks', []):
+                        if chunk.get('$type') in ('entGarmentSkinnedMeshComponent', 'entSkinnedMeshComponent'):
+                            chunk['mesh']['DepotPath'] = {"$type": "ResourcePath", "$storage": "string", "$value": fs_depot}
+                    fs_ent_path = out_dir / f"{mod_base}_{name}_mesh_entity_{foot_state}.ent.json"
+                    with open(fs_ent_path, 'w') as f:
+                        json.dump(fs_ent, f, indent=2)
+                    self.log(f"  Generated foot-state entity: {fs_ent_path.name}", 'info')
 
             # 4. Copy template mesh binaries for each body suffix
             #    .mesh.json can't be compiled by WolvenKit CLI 8.18.1,
@@ -1562,6 +1655,14 @@ class PipelineWorker:
                         self.log(f"  ✔  {glb_file.name} → {out_name}.mesh (foot={foot_state})", 'info')
                     else:
                         errors += 1
+                # Generate base mesh from lifted (default state) for each body type
+                for body_suffix in active_suffixes:
+                    lifted_mesh = arch_dir / f'{name}_lifted_{body_suffix}.mesh'
+                    base_mesh = arch_dir / f'{name}_{body_suffix}.mesh'
+                    if lifted_mesh.exists() and not base_mesh.exists():
+                        shutil.copy2(str(lifted_mesh), str(base_mesh))
+                        self.log(f"  ✔  Copied {lifted_mesh.name} → {base_mesh.name} (lifted = default base)", 'info')
+                        success += 1
 
         # 2b. Import raw material texture PNGs (color/normal/roughness/metalness)
         #     staged by sync_textures() into .xbm, landing at {mod_base}\{name}\textures\

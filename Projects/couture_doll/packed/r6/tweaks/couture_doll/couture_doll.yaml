@@ -1,0 +1,153 @@
+# TweakXL configs — compiled by CPMP v4.7.1
+
+# ── BOTTOM ──
+Items.couture_doll_bottom_espresso:
+  $base: Items.GenericLegClothing
+  placementSlots:
+    - !append OutfitSlots.LegsMiddle
+  entityName: couture_doll_bottom_espresso
+  appearanceName: couture_doll_bottom_espresso_
+  appearanceSuffixes:
+   - !append itemsFactoryAppearanceSuffix.LegsState
+  displayName: LocKey#couture_doll_bottom_loc_name_espresso
+  localizedDescription: LocKey#couture_doll_bottom_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\bottom\bottom_icons.inkatlas
+    atlasPartName: bottom_espresso
+  # Spawn: Game.AddToInventory("Items.couture_doll_bottom_espresso", 1)
+
+Items.couture_doll_bottom_emerald:
+  $base: Items.GenericLegClothing
+  placementSlots:
+    - !append OutfitSlots.LegsMiddle
+  entityName: couture_doll_bottom_emerald
+  appearanceName: couture_doll_bottom_emerald_
+  appearanceSuffixes:
+   - !append itemsFactoryAppearanceSuffix.LegsState
+  displayName: LocKey#couture_doll_bottom_loc_name_emerald
+  localizedDescription: LocKey#couture_doll_bottom_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\bottom\bottom_icons.inkatlas
+    atlasPartName: bottom_emerald
+  # Spawn: Game.AddToInventory("Items.couture_doll_bottom_emerald", 1)
+
+Items.couture_doll_bottom_crimson:
+  $base: Items.GenericLegClothing
+  placementSlots:
+    - !append OutfitSlots.LegsMiddle
+  entityName: couture_doll_bottom_crimson
+  appearanceName: couture_doll_bottom_crimson_
+  appearanceSuffixes:
+   - !append itemsFactoryAppearanceSuffix.LegsState
+  displayName: LocKey#couture_doll_bottom_loc_name_crimson
+  localizedDescription: LocKey#couture_doll_bottom_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\bottom\bottom_icons.inkatlas
+    atlasPartName: bottom_crimson
+  # Spawn: Game.AddToInventory("Items.couture_doll_bottom_crimson", 1)
+
+Items.couture_doll_bottom_midnight:
+  $base: Items.GenericLegClothing
+  placementSlots:
+    - !append OutfitSlots.LegsMiddle
+  entityName: couture_doll_bottom_midnight
+  appearanceName: couture_doll_bottom_midnight_
+  appearanceSuffixes:
+   - !append itemsFactoryAppearanceSuffix.LegsState
+  displayName: LocKey#couture_doll_bottom_loc_name_midnight
+  localizedDescription: LocKey#couture_doll_bottom_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\bottom\bottom_icons.inkatlas
+    atlasPartName: bottom_midnight
+  # Spawn: Game.AddToInventory("Items.couture_doll_bottom_midnight", 1)
+
+Items.couture_doll_bottom_royal:
+  $base: Items.GenericLegClothing
+  placementSlots:
+    - !append OutfitSlots.LegsMiddle
+  entityName: couture_doll_bottom_royal
+  appearanceName: couture_doll_bottom_royal_
+  appearanceSuffixes:
+   - !append itemsFactoryAppearanceSuffix.LegsState
+  displayName: LocKey#couture_doll_bottom_loc_name_royal
+  localizedDescription: LocKey#couture_doll_bottom_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\bottom\bottom_icons.inkatlas
+    atlasPartName: bottom_royal
+  # Spawn: Game.AddToInventory("Items.couture_doll_bottom_royal", 1)
+
+# ── TOP ──
+Items.couture_doll_top_espresso:
+  $base: Items.GenericInnerChestClothing
+  placementSlots:
+    - !append OutfitSlots.TorsoInner
+  entityName: couture_doll_top_root
+  appearanceName: couture_doll_top_root!espresso
+  displayName: LocKey#couture_doll_top_loc_name_espresso
+  localizedDescription: LocKey#couture_doll_top_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\top\top_icons.inkatlas
+    atlasPartName: top_espresso
+  # Spawn: Game.AddToInventory("Items.couture_doll_top_espresso", 1)
+
+Items.couture_doll_top_emerald:
+  $base: Items.GenericInnerChestClothing
+  placementSlots:
+    - !append OutfitSlots.TorsoInner
+  entityName: couture_doll_top_root
+  appearanceName: couture_doll_top_root!emerald
+  displayName: LocKey#couture_doll_top_loc_name_emerald
+  localizedDescription: LocKey#couture_doll_top_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\top\top_icons.inkatlas
+    atlasPartName: top_emerald
+  # Spawn: Game.AddToInventory("Items.couture_doll_top_emerald", 1)
+
+Items.couture_doll_top_crimson:
+  $base: Items.GenericInnerChestClothing
+  placementSlots:
+    - !append OutfitSlots.TorsoInner
+  entityName: couture_doll_top_root
+  appearanceName: couture_doll_top_root!crimson
+  displayName: LocKey#couture_doll_top_loc_name_crimson
+  localizedDescription: LocKey#couture_doll_top_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\top\top_icons.inkatlas
+    atlasPartName: top_crimson
+  # Spawn: Game.AddToInventory("Items.couture_doll_top_crimson", 1)
+
+Items.couture_doll_top_midnight:
+  $base: Items.GenericInnerChestClothing
+  placementSlots:
+    - !append OutfitSlots.TorsoInner
+  entityName: couture_doll_top_root
+  appearanceName: couture_doll_top_root!midnight
+  displayName: LocKey#couture_doll_top_loc_name_midnight
+  localizedDescription: LocKey#couture_doll_top_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\top\top_icons.inkatlas
+    atlasPartName: top_midnight
+  # Spawn: Game.AddToInventory("Items.couture_doll_top_midnight", 1)
+
+Items.couture_doll_top_royal:
+  $base: Items.GenericInnerChestClothing
+  placementSlots:
+    - !append OutfitSlots.TorsoInner
+  entityName: couture_doll_top_root
+  appearanceName: couture_doll_top_root!royal
+  displayName: LocKey#couture_doll_top_loc_name_royal
+  localizedDescription: LocKey#couture_doll_top_loc_desc
+  quality: Quality.Common
+  icon:
+    atlasResourcePath: couture_doll\top\top_icons.inkatlas
+    atlasPartName: top_royal
+  # Spawn: Game.AddToInventory("Items.couture_doll_top_royal", 1)

@@ -1,0 +1,6 @@
+factories:  
+  - tutorial\torso\my_custom_shirt_dynamic_variants\ops\my_shirt_dynamic_factory.csv
+localization:  
+  onscreens:  
+    en-us: 
+      - tutorial\torso\my_custom_shirt_dynamic_variants\ops\translation_strings.json

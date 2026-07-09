@@ -664,11 +664,10 @@ def import_glb_to_mesh(
                             idx[i], idx[i+1] = idx[i+1], idx[i]
                         dup['indices'] = idx
                     if dup['normals'] is not None:
-                        dup['normals'] = dup['normals'].copy()
-                        dup['normals'][:, 1] *= -1
+                        dup['normals'] = -dup['normals'].copy()
                     if dup['tangents'] is not None:
                         dup['tangents'] = dup['tangents'].copy()
-                        dup['tangents'][:, 1] *= -1
+                        dup['tangents'][:, :3] = -dup['tangents'][:, :3]
                     doubled_prims.append(dup)
                     _log(f"  Doubled chunk {pi} ({mat_name}): +{dup['vertex_count']} verts, flipped normals+indices", logger)
             primitives.extend(doubled_prims)
