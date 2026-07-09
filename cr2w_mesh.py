@@ -368,29 +368,65 @@ def extract_glb_data(glb_path: str) -> list:
 
 
 def build_bone_map(glb_joints: List[str], template_bones: List[str]) -> dict:
-    """Create mapping from GLB joint indices to template bone indices."""
+    """Create mapping from GLB joint indices to template bone indices.
+
+    Uses an explicit alias table for body-mod joints that don't exist in the
+    vanilla Inner Torso template skeleton but have anatomically correct
+    equivalents. This prevents the vertex explosion caused by falling back to
+    bone 0 (Hips) for joints near the shoulders, thumbs, or neck.
+    """
     bone_map = {}
+
+    # Explicit aliases: maps a known body-mod joint name (lowercase) to the
+    # name of the closest vanilla equivalent in the template skeleton.
+    BONE_ALIASES = {
+        # Body-mod shoulder extras -> vanilla shoulder joint
+        'l_shl_1_jnt': 'l_SHL_0_JNT',
+        'r_shl_1_jnt': 'r_SHL_0_JNT',
+        # Body-mod thumb in-hand -> nearest in-hand finger (thumb not in template)
+        'leftinthumb': 'LeftInHandIndex',
+        'rightinthumb': 'RightInHandIndex',
+        'leftinhandthumb': 'LeftInHandIndex',
+        'rightinhandthumb': 'RightInHandIndex',
+        # Neck variant
+        'neck1': 'Neck',
+        # Generic numbered variants -> strip the number
+        'neck2': 'Neck',
+        'spine4': 'Spine3',
+    }
 
     template_bone_lower = {b.lower(): i for i, b in enumerate(template_bones)}
 
     for glb_idx, joint_name in enumerate(glb_joints):
         joint_lower = joint_name.lower()
 
+        # 1. Exact match
         if joint_lower in template_bone_lower:
             bone_map[glb_idx] = template_bone_lower[joint_lower]
-        else:
-            for tmpl_name, tmpl_idx in template_bone_lower.items():
-                if joint_lower in tmpl_name or tmpl_name in joint_lower:
-                    bone_map[glb_idx] = tmpl_idx
-                    break
-            else:
-                if template_bones:
-                    bone_map[glb_idx] = 0
+            continue
+
+        # 2. Explicit alias table
+        alias_target = BONE_ALIASES.get(joint_lower)
+        if alias_target and alias_target.lower() in template_bone_lower:
+            bone_map[glb_idx] = template_bone_lower[alias_target.lower()]
+            continue
+
+        # 3. Substring match (existing fallback)
+        found = False
+        for tmpl_name, tmpl_idx in template_bone_lower.items():
+            if joint_lower in tmpl_name or tmpl_name in joint_lower:
+                bone_map[glb_idx] = tmpl_idx
+                found = True
+                break
+
+        # 4. Last resort: bone 0 (Hips) — only reached if truly unmatchable
+        if not found and template_bones:
+            bone_map[glb_idx] = 0
 
     return bone_map
 
 
-def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict) -> bytes:
+def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict, slot_strides: list) -> bytes:
     """Build the multi-stream vertex buffer."""
     positions = data['positions']
     normals = data['normals']
@@ -456,13 +492,27 @@ def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict)
             stream0.extend(struct.pack('BBBB', 255, 0, 0, 0))
             stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
 
+        # Pad stream0 to match the template's expected stride (e.g. if template wants 32, we generated 24, add 8 bytes)
+        generated_size0 = 24
+        expected_size0 = slot_strides[0] if len(slot_strides) > 0 else 24
+        if expected_size0 > generated_size0:
+            stream0.extend(b'\x00' * (expected_size0 - generated_size0))
+
+    expected_size1 = slot_strides[1] if len(slot_strides) > 1 else 4
+    pad1 = b'\x00' * (expected_size1 - 4) if expected_size1 > 4 else b''
+
     if uvs is not None:
         for i in range(num_vertices):
             uv = uvs[i]
             stream1.extend(pack_uv(uv[0], (uv[1] * -1) + 1))
+            stream1.extend(pad1)
     else:
         for i in range(num_vertices):
             stream1.extend(pack_uv(0.0, 0.0))
+            stream1.extend(pad1)
+
+    expected_size2 = slot_strides[2] if len(slot_strides) > 2 else 8
+    pad2 = b'\x00' * (expected_size2 - 8) if expected_size2 > 8 else b''
 
     if transformed_normals is not None:
         for i in range(num_vertices):
@@ -484,24 +534,29 @@ def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict)
                 packed_tangent = pack_normal(n[0], n[1], n[2])
 
             stream2.extend(struct.pack('<II', packed_normal, packed_tangent))
+            stream2.extend(pad2)
     else:
         for i in range(num_vertices):
             stream2.extend(struct.pack('<II', 0, 0))
+            stream2.extend(pad2)
+
+    expected_size3 = slot_strides[3] if len(slot_strides) > 3 else 4
+    pad3 = b'\x00' * (expected_size3 - 4) if expected_size3 > 4 else b''
 
     if colors is not None:
         for i in range(num_vertices):
             c = colors[i]
             if len(c) >= 3:
                 r, g, b = c[0], c[1], c[2]
-                a = c[3] if len(c) >= 4 else 1.0
+                a = c[3] if len(c) > 3 else 1.0
+                stream3.extend(pack_color(r, g, b, a))
             else:
-                r, g, b, a = 1.0, 1.0, 1.0, 1.0
-            stream3.extend(pack_color(r, g, b, a))
-            stream3.extend(pack_uv(0.0, 0.0))
+                stream3.extend(pack_color(1, 1, 1, 1))
+            stream3.extend(pad3)
     else:
         for i in range(num_vertices):
-            stream3.extend(pack_color(1.0, 1.0, 1.0, 1.0))
-            stream3.extend(pack_uv(0.0, 0.0))
+            stream3.extend(pack_color(1, 1, 1, 1))
+            stream3.extend(pad3)
 
     vertex_buffer = bytes(stream0) + bytes(stream1) + bytes(stream2) + bytes(stream3)
     return vertex_buffer
@@ -661,13 +716,18 @@ def import_glb_to_mesh(
                     if dup['indices'] is not None and len(dup['indices']) > 0:
                         idx = dup['indices'].copy()
                         for i in range(0, len(idx) - 2, 3):
-                            idx[i], idx[i+1] = idx[i+1], idx[i]
+                            tmp = idx[i].copy()
+                            idx[i] = idx[i+1]
+                            idx[i+1] = tmp
                         dup['indices'] = idx
                     if dup['normals'] is not None:
                         dup['normals'] = -dup['normals'].copy()
                     if dup['tangents'] is not None:
                         dup['tangents'] = dup['tangents'].copy()
-                        dup['tangents'][:, :3] = -dup['tangents'][:, :3]
+                        # Flip the W component (handedness) of the tangent, which flips the bitangent.
+                        # This preserves the original tangent (U) but correctly flips the bitangent (V)
+                        # along with the flipped normal.
+                        dup['tangents'][:, 3] = -dup['tangents'][:, 3]
                     doubled_prims.append(dup)
                     _log(f"  Doubled chunk {pi} ({mat_name}): +{dup['vertex_count']} verts, flipped normals+indices", logger)
             primitives.extend(doubled_prims)
@@ -735,12 +795,28 @@ def import_glb_to_mesh(
         _log(f"GLB joints: {len(glb_joints)}", logger)
 
         bone_map = build_bone_map(glb_joints, template_bones)
-        _log(f"Bone mappings: {len(bone_map)}", logger)
+        matched = sum(1 for i in bone_map if bone_map[i] != 0 or glb_joints[i].lower() in {b.lower() for b in template_bones})
+        fallback_count = len(glb_joints) - matched
+        _log(f"Bone mappings: {len(bone_map)}/{len(glb_joints)} joints processed, ~{fallback_count} fell back to bone 0", logger)
+        if fallback_count > 0:
+            unmatched = [glb_joints[i] for i in range(len(glb_joints)) if i not in bone_map or bone_map.get(i) == 0]
+            _log(f"  Unmatched/fallback joint names: {unmatched}", logger, "warn")
+            _log(f"  Template bone names available: {template_bones}", logger, "info")
 
         _log(f"\nStep 6: Building vertex buffers...", logger)
+        
+        # Get expected slot strides from the template mesh
+        existing_chunks = render_header.get('renderChunkInfos', [])
+        slot_strides = [24, 4, 8, 4] # fallback
+        if existing_chunks:
+            vl = existing_chunks[0].get('chunkVertices', {}).get('vertexLayout', {})
+            ss = vl.get('slotStrides', {}).get('Elements', [])
+            if ss and len(ss) >= 4:
+                slot_strides = ss[:4]
+                
         vertex_buffers = []
         for pi, prim in enumerate(primitives):
-            vb = build_vertex_buffer(prim, bone_map, qscale, qoffset)
+            vb = build_vertex_buffer(prim, bone_map, qscale, qoffset, slot_strides)
             vertex_buffers.append(vb)
             _log(f"  Chunk {pi} ({prim['material_name']}): {prim['vertex_count']} verts, {len(vb)} bytes", logger)
         vertex_buffer = b''.join(vertex_buffers)
@@ -800,21 +876,27 @@ def import_glb_to_mesh(
 
             chunk_vertices = chunk_info.get('chunkVertices', {})
             byte_offsets = chunk_vertices.get('byteOffsets', {})
-            byte_offsets['Elements'] = [s0, s1, s2, s3, 0]
+            
+            # The byte offsets must match the padded buffers we actually generated
+            # Our padded vertex buffer length for this chunk is len(vb)
+            # The streams are split according to the expected size per vertex:
+            expected_size0 = slot_strides[0] if len(slot_strides) > 0 else 24
+            expected_size1 = slot_strides[1] if len(slot_strides) > 1 else 4
+            expected_size2 = slot_strides[2] if len(slot_strides) > 2 else 8
+            expected_size3 = slot_strides[3] if len(slot_strides) > 3 else 4
+            
+            bytes_per_vert_actual = expected_size0 + expected_size1 + expected_size2 + expected_size3
+            
+            s0 = vert_offset * bytes_per_vert_actual
+            s1 = s0 + nv * expected_size0
+            s2 = s1 + nv * expected_size1
+            s3 = s2 + nv * expected_size2
+            s4 = s3 + nv * expected_size3
+            
+            byte_offsets['Elements'] = [s0, s1, s2, s3, s4]
             chunk_vertices['byteOffsets'] = byte_offsets
-            # Update slotStrides in vertexLayout to match actual vertex format
-            vertex_layout = chunk_vertices.get('vertexLayout', {})
-            slot_strides = vertex_layout.get('slotStrides', {})
-            if slot_strides:
-                stride_elements = slot_strides.get('Elements', [])
-                if stride_elements:
-                    stride_elements[0] = stream0_per_vert
-                    stride_elements[1] = stream1_per_vert
-                    stride_elements[2] = stream2_per_vert
-                    stride_elements[3] = stream3_per_vert
-                    slot_strides['Elements'] = stride_elements
-                    vertex_layout['slotStrides'] = slot_strides
-                    chunk_vertices['vertexLayout'] = vertex_layout
+            
+            # We DO NOT update slotStrides here anymore. We must conform to the template's layout!
             chunk_info['chunkVertices'] = chunk_vertices
 
             chunk_indices = chunk_info.get('chunkIndices', {})
@@ -857,28 +939,40 @@ def import_glb_to_mesh(
                             _log(f"  Garment chunk {ci}: isTwoSided = 1", logger)
 
                 # --- GarmentSupport morphOffsets ---
-                # Only write morphOffsets when the GLB actually has morph data.
-                # The template's stale morphOffsets are harmless — the game ignores
-                # them when PS_ExtraData is all zeros. Overwriting with wrong-size
-                # zero buffers breaks cr2w deserialization.
+                # entGarmentSkinnedMeshComponent ALWAYS expects a morphOffsets buffer.
+                # If we remove it the game engine crashes. If we write wrong-sized bytes it
+                # corrupts the auto-fitter. The correct approach is to write zeros sized to
+                # the EXACT vertex count from new_chunk_infos (the actual render header).
                 has_morph = any(p.get('garment_morph') is not None for p in primitives)
                 if has_morph:
                     _log(f"  Writing GarmentSupport morphOffsets for {num_chunks} chunk(s)...", logger)
-                    for ci in range(min(num_chunks, len(pdata.get('chunks', [])), len(primitives))):
-                        morph = primitives[ci].get('garment_morph')
-                        if morph is not None and len(morph) > 0:
-                            morph_bytes = bytearray()
-                            for v in range(len(morph)):
-                                morph_bytes.extend(struct.pack('<fff', morph[v][0], morph[v][1], morph[v][2]))
-                            chunk_data = pdata['chunks'][ci]
-                            chunk_data['morphOffsets'] = {
-                                'BufferId': chunk_data.get('morphOffsets', {}).get('BufferId', str(3 + ci)),
-                                'Flags': 0,
-                                'Bytes': base64.b64encode(bytes(morph_bytes)).decode('ascii')
-                            }
-                            _log(f"    Chunk {ci}: {len(morph)} vertices, {len(morph_bytes)} bytes", logger)
                 else:
-                    _log(f"  No GarmentSupport morph data — keeping template morphOffsets as-is", logger)
+                    _log(f"  No GarmentSupport morph data — writing zeroed morphOffsets (correctly sized)", logger)
+
+                for ci in range(min(num_chunks, len(pdata.get('chunks', [])))):
+                    chunk_data = pdata['chunks'][ci]
+                    if 'morphOffsets' not in chunk_data:
+                        continue  # template didn't have it, skip
+
+                    # Use vertex count from the built render header — this is the
+                    # authoritative count that the engine will use when reading the buffer.
+                    nv_render = new_chunk_infos[ci]['numVertices'] if ci < len(new_chunk_infos) else 0
+
+                    morph = primitives[ci].get('garment_morph') if ci < len(primitives) else None
+                    if morph is not None and len(morph) > 0:
+                        morph_bytes = bytearray()
+                        for v in range(len(morph)):
+                            morph_bytes.extend(struct.pack('<fff', morph[v][0], morph[v][1], morph[v][2]))
+                        _log(f"    Chunk {ci}: {len(morph)} morph verts → {len(morph_bytes)} bytes", logger)
+                    else:
+                        morph_bytes = bytearray(12 * nv_render)  # 3 floats × 4 bytes × nv
+                        _log(f"    Chunk {ci}: zeroed {nv_render} verts → {len(morph_bytes)} bytes", logger)
+
+                    chunk_data['morphOffsets'] = {
+                        'BufferId': chunk_data['morphOffsets'].get('BufferId', str(3 + ci)),
+                        'Flags': 0,
+                        'Bytes': base64.b64encode(bytes(morph_bytes)).decode('ascii')
+                    }
 
         _log(f"\nStep 9: Updating bounding box...", logger)
         transformed_pos = transform_coord_sys(all_positions)
