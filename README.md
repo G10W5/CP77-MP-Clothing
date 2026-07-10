@@ -1,8 +1,12 @@
+<div align="center">
+
 ![CP77 Modding Pipeline Banner](banner.png)
 
 # CP77 Modding Pipeline
 
 A streamlined GUI tool to compile 3D model exports (GLB/GLTF) into fully functioning Cyberpunk 2077 clothing mods - with auto-generated names, textures, icons, and spawn commands.
+
+</div>
 
 ## Features
 
