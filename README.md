@@ -1,30 +1,32 @@
+![CP77 Modding Pipeline Banner](banner.png)
+
 # CP77 Modding Pipeline
 
-A streamlined GUI tool to compile 3D model exports (GLB/GLTF) into fully functioning Cyberpunk 2077 clothing mods — with auto-generated names, textures, icons, and spawn commands.
+A streamlined GUI tool to compile 3D model exports (GLB/GLTF) into fully functioning Cyberpunk 2077 clothing mods - with auto-generated names, textures, icons, and spawn commands.
 
 ## Features
 
-- **Automated WolvenKit Project Setup** — directory structure, configs, and ArchiveXL/TweakXL files
-- **Custom GLB→CR2W Mesh Converter** — no WolvenKit dependency for mesh conversion
-- **Per-Material Settings** — Transparent (alpha mask) and Two-sided checkboxes per material group
-- **Foot-State Variants for Leg Items** — tights/stockings that switch mesh with footwear
-- **Custom Icon Sheet Generation** — auto-slices source icon PNGs into inventory icons
-- **Multi-Material Support** — multiple texture sets per mesh (corset + ruffle, fishnet + skin, etc.)
-- **Body-Type Variants** — per-body meshes for ebb, eve, angel, rb, wb, etc.
-- **Progress Bar & Cancel** — real-time progress tracking with cancel support
-- **Per-Item Compile** — rebuild a single item without re-running the full pipeline
-- **Dry-Run Preview** — see what files would be generated before writing anything
+- **Automated WolvenKit Project Setup** - directory structure, configs, and ArchiveXL/TweakXL files
+- **Custom GLB->CR2W Mesh Converter** - no WolvenKit dependency for mesh conversion
+- **Per-Material Settings** - Transparent (alpha mask) and Two-sided checkboxes per material group
+- **Foot-State Variants for Leg Items** - tights/stockings that switch mesh with footwear
+- **Custom Icon Sheet Generation** - auto-slices source icon PNGs into inventory icons
+- **Multi-Material Support** - multiple texture sets per mesh (corset + ruffle, fishnet + skin, etc.)
+- **Body-Type Variants** - per-body meshes for ebb, eve, angel, rb, wb, etc.
+- **Progress Bar & Cancel** - real-time progress tracking with cancel support
+- **Per-Item Compile** - rebuild a single item without re-running the full pipeline
+- **Dry-Run Preview** - see what files would be generated before writing anything
 
 ## Getting Started
 
 ### Requirements
 
 - **Python 3.10+** with pip
-- **WolvenKit CLI** — download from [WolvenKit releases](https://github.com/WolvenKit/WolvenKit/releases)
+- **WolvenKit CLI** - download from [WolvenKit releases](https://github.com/WolvenKit/WolvenKit/releases)
 - **Cyberpunk 2077** with these mods installed:
-  - [ArchiveXL](https://github.com/psiberx/cp2077-archive-xl) — dynamic mesh/material substitution
-  - [TweakXL](https://github.com/psiberx/cp2077-tweak-xl) — item registration
-  - [Equipment-EX](https://github.com/psiberx/cp2077-equipment-ex) — (optional) custom outfit slots
+  - [ArchiveXL](https://github.com/psiberx/cp2077-archive-xl) - dynamic mesh/material substitution
+  - [TweakXL](https://github.com/psiberx/cp2077-tweak-xl) - item registration
+  - [Equipment-EX](https://github.com/psiberx/cp2077-equipment-ex) - (optional) custom outfit slots
 
 ### Install Dependencies
 
@@ -60,27 +62,27 @@ python cpmp.py
 ### How to Use the GUI
 
 1. **Set your paths** at the top of the window:
-   - **GLB Export Dir** — the folder where your `.glb` files and textures live
-   - **Mod Output Dir** — where the WolvenKit project will be generated (e.g., `C:\Users\You\Documents\WolvenKit`)
-   - **Mod Base Name** — your mod's identifier (e.g., `Casual_Pants`). No spaces.
-   - **WolvenKit CLI** — path to `WolvenKit.CLI.exe`
+   - **GLB Export Dir** - the folder where your `.glb` files and textures live
+   - **Mod Output Dir** - where the WolvenKit project will be generated (e.g., `C:\Users\You\Documents\WolvenKit`)
+   - **Mod Base Name** - your mod's identifier (e.g., `Casual_Pants`). No spaces.
+   - **WolvenKit CLI** - path to `WolvenKit.CLI.exe`
 
-2. **Click Scan** — the pipeline scans your export folder and creates an item card for each subfolder containing `.glb` files.
+2. **Click Scan** - the pipeline scans your export folder and creates an item card for each subfolder containing `.glb` files.
 
 3. **Configure each item** on its card:
-   - **Vanilla Base Category** — which clothing slot (Legs, Inner Torso, Feet, etc.)
-   - **Equipment-EX Outfit Slot** — (optional) custom slot for non-vanilla outfits
-   - **Needs body-type variants** — uncheck for accessories/heels that look the same on all bodies
-   - **Has foot state variants** — (Leg slot only) check if your tights have flat/lifted/heel variants
-   - **Display Name / Description** — what players see in-game
-   - **Rarity / Icon** — quality tier and icon generation mode
-   - **Material Settings** — per material group: Transparent (alpha mask) and 2-sided checkboxes
+   - **Vanilla Base Category** - which clothing slot (Legs, Inner Torso, Feet, etc.)
+   - **Equipment-EX Outfit Slot** - (optional) custom slot for non-vanilla outfits
+   - **Needs body-type variants** - uncheck for accessories/heels that look the same on all bodies
+   - **Has foot state variants** - (Leg slot only) check if your tights have flat/lifted/heel variants
+   - **Display Name / Description** - what players see in-game
+   - **Rarity / Icon** - quality tier and icon generation mode
+   - **Material Settings** - per material group: Transparent (alpha mask) and 2-sided checkboxes
 
 4. **Set global options** in the middle panel:
-   - **Color Variants** — comma-separated color names matching your `_color_{variant}.png` files
-   - **Body Types** — which body shapes to generate (default: `angel, eve, wb`)
+   - **Color Variants** - comma-separated color names matching your `_color_{variant}.png` files
+   - **Body Types** - which body shapes to generate (default: `angel, eve, wb`)
 
-5. **Click Process & Compile** — the pipeline runs:
+5. **Click Process & Compile** - the pipeline runs:
    - Scans and copies GLBs/textures
    - Converts GLBs to CR2W `.mesh` format
    - Imports textures as `.xbm` files
@@ -125,7 +127,7 @@ Each material group is a separate mesh **object** in Blender (not a material slo
 ```
 MyModExport/
 ├── fishnet_tights/
-│   ├── fishnet_tights_ebb.glb          ← GLB with 2 mesh objects: "corset" + "ruffle"
+│   ├── fishnet_tights_ebb.glb          <- GLB with 2 mesh objects: "corset" + "ruffle"
 │   ├── corset_color_blue.png
 │   ├── corset_n.png
 │   ├── ruffle_color_blue.png
@@ -140,10 +142,10 @@ For tights/stockings that change shape with footwear (flat vs heels), export sep
 ```
 MyModExport/
 ├── fishnet_tights/
-│   ├── fishnet_tights_flat_ebb.glb     ← flat feet geometry
-│   ├── fishnet_tights_lifted_ebb.glb   ← default (lifted) geometry
-│   ├── fishnet_tights_heel_ebb.glb     ← high heel geometry
-│   ├── fishnet_tights_flat_angel.glb   ← per body type × foot state
+│   ├── fishnet_tights_flat_ebb.glb     <- flat feet geometry
+│   ├── fishnet_tights_lifted_ebb.glb   <- default (lifted) geometry
+│   ├── fishnet_tights_heel_ebb.glb     <- high heel geometry
+│   ├── fishnet_tights_flat_angel.glb   <- per body type x foot state
 │   ├── fishnet_tights_lifted_angel.glb
 │   ├── fishnet_tights_heel_angel.glb
 │   ├── fishnet_color_black.png
@@ -176,8 +178,8 @@ If your item looks the same on all body types (heels, accessories), export one G
 
 > **Important:** WolvenKit's GLB exporter does **not** preserve Blender material slot names. The pipeline uses **mesh object names** (the name in Blender's Outliner) to identify material groups. Rename the **objects**, not the materials.
 
-- Object named `ruffle` → textures must be `ruffle_color_*.png`, `ruffle_n.png`, etc.
-- Object named `corset` → textures must be `corset_color_*.png`, `corset_n.png`, etc.
+- Object named `ruffle` -> textures must be `ruffle_color_*.png`, `ruffle_n.png`, etc.
+- Object named `corset` -> textures must be `corset_color_*.png`, `corset_n.png`, etc.
 
 ### Texture Naming Convention
 
@@ -198,8 +200,8 @@ All textures go in the same folder as the GLB:
 
 For each material group detected in your GLB, you can toggle:
 
-- **Transparent** — Enables alpha masking. The diffuse texture's alpha channel becomes the opacity mask. Use for fishnets, lace, sheer fabric, etc.
-- **2-sided** — Renders both faces of the mesh. Use for thin geometry like strings, ribbons, or cloth edges.
+- **Transparent** - Enables alpha masking. The diffuse texture's alpha channel becomes the opacity mask. Use for fishnets, lace, sheer fabric, etc.
+- **2-sided** - Renders both faces of the mesh. Use for thin geometry like strings, ribbons, or cloth edges.
 
 ## Template Meshes
 
@@ -209,5 +211,5 @@ The `template_meshes/` folder contains base `.mesh` files per clothing slot. The
 
 ## Acknowledgments
 
-- **WolvenKit** ([GitHub](https://github.com/WolvenKit/WolvenKit)) — CR2W file format specs and CLI tool (GPL v3)
+- **WolvenKit** ([GitHub](https://github.com/WolvenKit/WolvenKit)) - CR2W file format specs and CLI tool (GPL v3)
 - **Inkatlas JSON structure** based on the official `single_item_template.inkatlas.json`
