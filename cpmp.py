@@ -897,11 +897,13 @@ class PipelineWorker:
 
                 yaml_lines.append(f"  entityName: {entity_name}")
                 yaml_lines.append(f"  appearanceName: {entity_name}!{color}")
-                if is_foot_state:
-                    # For foot states, ArchiveXL automatically swaps components named
-                    # &FlatShoes or &HighHeels when this suffix is active on the item.
-                    yaml_lines.append(f"  appearanceSuffixes:")
-                    yaml_lines.append(f"   - !append itemsFactoryAppearanceSuffix.LegsState")
+                # NOTE: Do NOT add appearanceSuffixes: !append itemsFactoryAppearanceSuffix.LegsState
+                # for Dynamic Variants items. The foot-state is already handled at the COMPONENT
+                # level via &Lifted/&Flat/&FlatShoes/&HighHeels suffixes on mesh component names.
+                # Adding appearanceSuffixes would make the game append _Lifted/_Flat to the
+                # appearance NAME (e.g. couture_doll_bottom_root!espresso_Lifted), but the
+                # appearance file only has couture_doll_bottom_root — the game can't find the
+                # suffixed appearance and crashes on equip.
                 yaml_lines.append(f"  displayName: LocKey#{mod_base}_{name}_loc_name_{color}")
                 yaml_lines.append(f"  localizedDescription: LocKey#{mod_base}_{name}_loc_desc")
                 yaml_lines.append(f"  quality: {quality}")
@@ -1125,6 +1127,11 @@ class PipelineWorker:
             with open(out_dir / f"{mod_base}_{name}_root.ent.json", 'w') as f:
                 json.dump(root, f, indent=2)
 
+            # Resolve active foot states for this item (used by mesh entity generation below)
+            active_foot_states = [fs for fs in ('lifted', 'flat', 'heel') if fs in it.get('foot_states', [])]
+            if not active_foot_states:
+                active_foot_states = ['lifted']
+
             # No per-color root entities needed! Dynamic variants handle color
             # resolution automatically via the !color suffix and DynamicAppearance tag.
 
@@ -1185,14 +1192,43 @@ class PipelineWorker:
             mesh_appearance = "*{variant}"
             GARMENT_TYPES = ('entGarmentSkinnedMeshComponent', 'entSkinnedMeshComponent')
 
+            # GarmentSupport component prefix map (per redmodding wiki).
+            # The game calculates garment scores from the FIRST characters of the
+            # component name. Without the correct prefix, items get score 0 and
+            # cause distortion/clipping when combined with other clothing.
+            # l1_ = Legs (pants), t1_ = Torso inner (shirts), t2_ = Torso outer (jackets),
+            # s1_ = Shoes.
+            SLOT_TO_GARMENT_PREFIX = {
+                'GenericLegClothing': 'l1',
+                'GenericInnerChestClothing': 't1',
+                'GenericOuterChestClothing': 't2',
+                'GenericTorsoClothing': 't1',
+                'GenericFootClothing': 's1',
+                'GenericHeadClothing': 'h1',
+            }
+            item_slot = it.get('slot', '')
+            garment_prefix = SLOT_TO_GARMENT_PREFIX.get(item_slot, '')
+
             def _patch_components(ent_chunk, comp_name, depot_path):
-                # Helper to rename components and point them at the right mesh
+                # Helper to rename components and point them at the right mesh.
+                # Also syncs the 'id' field from the compiledData chunk to the JSON
+                # component, so they share the same CRUID.
+                # Build a map of compiledData chunk IDs by type for cross-referencing
+                cd_chunks = ent_chunk.get('compiledData', {}).get('Data', {}).get('Chunks', [])
+                # Find the mesh component in compiledData and get its id
+                mesh_cd_id = None
+                for cc in cd_chunks:
+                    if cc.get('$type') in GARMENT_TYPES:
+                        mesh_cd_id = cc.get('id')
+                        break
                 for comp in ent_chunk.get('components', []):
                     if comp.get('$type') in GARMENT_TYPES:
                         comp['$type'] = 'entGarmentSkinnedMeshComponent'
                         comp['mesh']['DepotPath'] = {"$type": "ResourcePath", "$storage": "string", "$value": depot_path}
                         comp['meshAppearance'] = {"$type": "CName", "$storage": "string", "$value": mesh_appearance}
                         comp['name'] = {"$type": "CName", "$storage": "string", "$value": comp_name}
+                        if mesh_cd_id is not None:
+                            comp['id'] = mesh_cd_id
                 for chunk in ent_chunk.get('compiledData', {}).get('Data', {}).get('Chunks', []):
                     if chunk.get('$type') in GARMENT_TYPES:
                         chunk['$type'] = 'entGarmentSkinnedMeshComponent'
@@ -1202,12 +1238,13 @@ class PipelineWorker:
 
             if not is_foot_state:
                 mesh_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{{body}}.mesh"
-                _patch_components(mesh_ent['Data']['RootChunk'], f"{name}_mesh", mesh_depot)
+                comp_base = f"{garment_prefix}_{name}_mesh" if garment_prefix else f"{name}_mesh"
+                _patch_components(mesh_ent['Data']['RootChunk'], comp_base, mesh_depot)
             else:
                 # Foot state items get duplicate components inside the SINGLE mesh entity,
                 # conditionally loaded by ArchiveXL via suffixes on the component name.
                 # ArchiveXL's LegsState appends one of 4 suffixes: &Flat, &Lifted, &FlatShoes, &HighHeels
-                
+
                 # Determine which of the modder's variants to use for each of the 4 game states.
                 # Fallbacks are used if the modder didn't provide a specific state.
                 def best_match(preferred, alternatives):
@@ -1215,7 +1252,7 @@ class PipelineWorker:
                     for alt in alternatives:
                         if alt in active_foot_states: return alt
                     return active_foot_states[0]
-                
+
                 game_state_to_fs = {
                     '&Lifted': best_match('lifted', ['flat', 'heel']),
                     '&Flat': best_match('flat', ['lifted', 'heel']),
@@ -1225,7 +1262,7 @@ class PipelineWorker:
 
                 orig_comps = copy.deepcopy(mesh_ent['Data']['RootChunk'].get('components', []))
                 orig_chunks = copy.deepcopy(mesh_ent['Data']['RootChunk'].get('compiledData', {}).get('Data', {}).get('Chunks', []))
-                
+
                 mesh_ent['Data']['RootChunk']['components'] = []
                 if 'compiledData' in mesh_ent['Data']['RootChunk']:
                     mesh_ent['Data']['RootChunk']['compiledData']['Data']['Chunks'] = []
@@ -1240,24 +1277,91 @@ class PipelineWorker:
                 mesh_comps = [c for c in orig_comps if c.get('$type') in GARMENT_TYPES]
                 mesh_chunks = [c for c in orig_chunks if c.get('$type') in GARMENT_TYPES]
 
+                # Track the highest existing CRUID to generate unique IDs for duplicated components.
+                # Without unique CRUIDs, the game crashes on equip (per redmodding wiki:
+                # "My garment support explodes on contact with another item! It's not doing
+                # that to spite you. Most likely, you have a non-unique component ID").
+                existing_cruids = set()
+                for c in orig_chunks:
+                    cid = c.get('id')
+                    if cid is not None:
+                        existing_cruids.add(int(cid))
+                next_cruid = max(existing_cruids) + 1 if existing_cruids else 2184094197627056160
+
                 for suffix, fs in game_state_to_fs.items():
                     fs_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{fs}_{{body}}.mesh"
-                    comp_name = f"{name}_mesh{suffix}"
-                    
+                    comp_name = f"{garment_prefix}_{name}_mesh{suffix}" if garment_prefix else f"{name}_mesh{suffix}"
+
                     fs_comps = copy.deepcopy(mesh_comps)
                     fs_chunks = copy.deepcopy(mesh_chunks)
-                    
+
+                    # Assign a unique CRUID to this foot-state variant
+                    for fc in fs_chunks:
+                        fc['id'] = str(next_cruid)
+                        next_cruid += 1
+
                     temp_chunk = {'components': fs_comps, 'compiledData': {'Data': {'Chunks': fs_chunks}}}
                     _patch_components(temp_chunk, comp_name, fs_depot)
-                    
+
                     mesh_ent['Data']['RootChunk']['components'].extend(temp_chunk['components'])
                     if 'compiledData' in mesh_ent['Data']['RootChunk']:
+
                         mesh_ent['Data']['RootChunk']['compiledData']['Data']['Chunks'].extend(temp_chunk['compiledData']['Data']['Chunks'])
+                        # Update CruidDict to include the new unique CRUIDs
+                        cruid_dict = mesh_ent['Data']['RootChunk']['compiledData']['Data'].setdefault('CruidDict', {})
+                        for i, fc in enumerate(fs_chunks):
+                            # HandleId maps to CRUID. Start from existing max + offset.
+                            handle_id = str(len(orig_chunks) + i)
+                            cruid_dict[handle_id] = fc['id']
 
                 self.log(f"  Mesh entity: injected 4 dynamic variants mapping to ({', '.join(active_foot_states)})", 'info')
 
             with open(out_dir / f"{mod_base}_{name}_mesh_entity.ent.json", 'w') as f:
                 json.dump(mesh_ent, f, indent=2)
+
+            # --- DIAGNOSTIC VALIDATION (Handoff #4 Issue 2) ---
+            # For every depot path referenced by the mesh entity's components,
+            # verify the corresponding .mesh file actually exists on disk.
+            # This catches the "multi-foot-state invisible" bug where the entity
+            # references meshes that were never generated (e.g. because the
+            # modder didn't provide a GLB for every checked state, or because
+            # active_suffixes/body-type filtering silently dropped one).
+            if is_foot_state:
+                # Collect all depot paths from the mesh entity components
+                depot_paths = set()
+                for comp in mesh_ent['Data']['RootChunk'].get('components', []):
+                    mesh_path = comp.get('mesh', {}).get('DepotPath', {}).get('$value', '')
+                    if mesh_path and '{body}' in mesh_path:
+                        # Expand {body} to all active body suffixes
+                        for body_tok in [tok for _, tok in body_suffixes]:
+                            expanded = mesh_path.replace('{body}', body_tok)
+                            depot_paths.add(expanded)
+
+                # Check each expanded path against the archive directory
+                mesh_dir = out_dir / 'meshes'
+                missing = []
+                for depot in sorted(depot_paths):
+                    # Convert depot path to filename: "couture_doll\bottom\meshes\bottom_flat_angel.mesh"
+                    # -> "bottom_flat_angel.mesh"
+                    filename = depot.split('\\')[-1]
+                    full_path = mesh_dir / filename
+                    if not full_path.exists():
+                        missing.append(filename)
+
+                if missing:
+                    self.log(
+                        f"  ⚠ DIAGNOSTIC: {len(missing)} mesh file(s) referenced by mesh entity but NOT found in {mesh_dir}:",
+                        'warn'
+                    )
+                    for m in missing[:20]:  # Cap output to 20
+                        self.log(f"    - {m}", 'warn')
+                    if len(missing) > 20:
+                        self.log(f"    ... and {len(missing) - 20} more", 'warn')
+                else:
+                    self.log(
+                        f"  ✓ DIAGNOSTIC: All {len(depot_paths)} mesh files exist for {name}",
+                        'info'
+                    )
 
             # 4. Copy template mesh binaries for each body suffix
             #    .mesh.json can't be compiled by WolvenKit CLI 8.18.1,
@@ -1280,21 +1384,30 @@ class PipelineWorker:
                         if candidates:
                             fallback_mesh = candidates[0]
                             break
-            
-            active_foot_states = [fs for fs in ('lifted', 'flat', 'heel') if fs in it.get('foot_states', [])]
-            if not active_foot_states: active_foot_states = ['lifted']
 
-            if is_foot_state:
-                # Clean up any stale plain (non-foot-state) mesh files that might have
-                # been created by previous pipeline runs. Their presence causes the
-                # game to load the wrong mesh as the default.
+            if not is_foot_state:
+                # Only copy templates for the body types the user actually selected
+                # (not the full BODY_SUFFIX_CATALOG which includes every alias).
+                active_body_tokens = {tok for _, tok in body_suffixes}
+
+                # Proactive cleanup: delete any stale {name}_{body}.mesh files that
+                # are not in the active body token set. These get created by older
+                # pipeline runs or by the full BODY_SUFFIX_CATALOG iteration and
+                # cause the game to load the wrong mesh / CRUID collisions.
+                for existing in mesh_dir.glob(f"{name}_*.mesh"):
+                    # Extract body token from filename: {name}_{token}.mesh
+                    stem = existing.stem
+                    parts = stem.split('_', 1)
+                    if len(parts) < 2:
+                        continue
+                    token = parts[1]
+                    if token not in active_body_tokens:
+                        existing.unlink()
+                        self.log(f"  🗑  Removed stale body mesh: {existing.name} (body '{token}' not active)", 'info')
+
                 for _, body_suffix in body_suffixes:
-                    stale = mesh_dir / f"{name}_{body_suffix}.mesh"
-                    if stale.exists():
-                        stale.unlink()
-                        self.log(f"  🗑  Removed stale plain mesh: {stale.name}", 'info')
-            else:
-                for _, body_suffix in body_suffixes:
+                    if body_suffix not in active_body_tokens:
+                        continue
                     per_body = slot_dir / f"template_mesh_{body_suffix}.mesh" if slot_dir.is_dir() else None
                     src_mesh = per_body if (per_body and per_body.is_file()) else fallback_mesh
 
@@ -1559,6 +1672,8 @@ class PipelineWorker:
                         has_opacity=opacity_mats if opacity_mats else None,
                         two_sided_materials=two_sided if two_sided else None,
                         material_settings=mat_settings if mat_settings else None,
+                        apply_garment_support=it.get('apply_garment_support', False),
+                        disable_garment_support=it.get('disable_garment_support', False),
                     )
                 except Exception as e:
                     self.log(f"  ✗  GLB conversion failed for {glb_file.name}: {e}", 'error')
@@ -1639,6 +1754,18 @@ class PipelineWorker:
                 # &Lifted / &Flat / &FlatShoes / &HighHeels suffix system. Creating a
                 # plain base copy causes the game to load it as the default and ignore
                 # all the foot-state variants.
+
+            # --- Stale plain mesh cleanup (post-conversion) ---
+            # The per-body GLB conversion path (lines ~1612-1623) and any stale files
+            # from prior runs can create plain {name}_{body}.mesh files for foot-state
+            # items. Delete them HERE (after GLB conversion) so the game can't load them
+            # as the default and bypass all the &Lifted/&Flat/&HighHeels variants.
+            if has_foot and per_foot_glbs:
+                for body_suffix in active_suffixes:
+                    stale = arch_dir / f'{name}_{body_suffix}.mesh'
+                    if stale.exists():
+                        stale.unlink()
+                        self.log(f"  🗑  Removed stale plain mesh: {stale.name}", 'info')
 
         # 2b. Import raw material texture PNGs (color/normal/roughness/metalness)
         #     staged by sync_textures() into .xbm, landing at {mod_base}\{name}\textures\
@@ -2162,6 +2289,26 @@ class CPMPApp:
             foot_var_cb.grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 3))
             ToolTip(foot_var_cb, "Check if this leg item has separate GLBs per foot state (e.g. tights with flat/high heel variants).")
 
+            # GarmentSupport toggle: default OFF (modder applies garment support manually in Blender)
+            apply_garment_support = tk.BooleanVar(value=it.get('apply_garment_support', False))
+            garment_cb = tk.Checkbutton(
+                body_frame, text="Apply GarmentSupport from GLB", variable=apply_garment_support,
+                bg=C['bg_panel'], fg=C['text_label'], selectcolor=C['bg_input'],
+                activebackground=C['bg_panel'], activeforeground=C['text_label'], font=(FONT, 8)
+            )
+            garment_cb.grid(row=3, column=0, columnspan=2, sticky='w', pady=(0, 3))
+            ToolTip(garment_cb, "Read the GarmentSupport morph target from the GLB and write it into the mesh's morphOffsets buffer.\n\nLEAVE OFF if you apply GarmentSupport manually in Blender (recommended — the game will auto-shrink under jackets/boots based on garment score, but you control the deformation).\n\nWhen OFF, the pipeline writes a zero-filled morphOffsets buffer so the game doesn't crash, and no auto-shrink is applied.")
+
+            # Disable GarmentSupport entirely (stopgap for "exploding pixel cloud" bug)
+            disable_garment_support = tk.BooleanVar(value=it.get('disable_garment_support', False))
+            disable_gs_cb = tk.Checkbutton(
+                body_frame, text="Disable GarmentSupport (stopgap)", variable=disable_garment_support,
+                bg=C['bg_panel'], fg=C['text_label'], selectcolor=C['bg_input'],
+                activebackground=C['bg_panel'], activeforeground=C['text_label'], font=(FONT, 8)
+            )
+            disable_gs_cb.grid(row=4, column=0, columnspan=2, sticky='w', pady=(0, 3))
+            ToolTip(disable_gs_cb, "STOPGAP OPTION: Disables GarmentSupport entirely. The mesh will NOT auto-shrink under other items.\n\nUse this if the mesh 'explodes' or looks distorted when equipped alongside other clothing items. The item may clip through jackets/boots, but it won't distort.\n\nThis is a temporary fix while the GarmentSupport color attribute requirements are being resolved. Re-enable GarmentSupport once the bug is fixed.\n\nWARNING: This disables the auto-fitter. The item may z-fight with overlapping garments.")
+
             def _toggle_foot_state_row(event=None, bv=base_var, frame=foot_state_frame, fvar=has_foot_variants, fcb=foot_var_cb):
                 is_feet = bv.get() == 'GenericFootClothing'
                 is_leg = bv.get() == 'GenericLegClothing'
@@ -2385,6 +2532,8 @@ class CPMPApp:
                 'icon_lookup': icon_lookup,
                 'mat_settings_vars': mat_settings_vars,
                 'has_foot_variants': has_foot_variants,
+                'apply_garment_support': apply_garment_support,
+                'disable_garment_support': disable_garment_support,
             })
         self._update_scrollbar_visibility()
 
@@ -2661,6 +2810,7 @@ class CPMPApp:
                         'two_sided_materials': ts_list,
                         'material_settings': ms_dict,
                         'has_foot_variants': w['has_foot_variants'].get(),
+                        'apply_garment_support': w['apply_garment_support'].get(),
                     })
             else:
                 for s in items:
@@ -2797,7 +2947,9 @@ class CPMPApp:
                     'icon_mode': w['icon_lookup'].get(w['icon_mode_var'].get(), ICON_MODES[0][0]),
                     'two_sided_materials': ts_list,
                     'material_settings': ms_dict,
-                    'has_foot_variants': w['has_foot_variants'].get(),
+                        'has_foot_variants': w['has_foot_variants'].get(),
+                        'apply_garment_support': w['apply_garment_support'].get(),
+                        'disable_garment_support': w['disable_garment_support'].get(),
                 })
         else:
             # Fallback scanner if compilation triggered without running manual scan preview step first
@@ -2934,6 +3086,8 @@ class CPMPApp:
                         'two_sided_materials': ts_list,
                         'material_settings': ms_dict,
                         'has_foot_variants': w['has_foot_variants'].get(),
+                        'apply_garment_support': w['apply_garment_support'].get(),
+                        'disable_garment_support': w['disable_garment_support'].get(),
                     }
                     break
         if not single_item:

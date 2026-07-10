@@ -193,7 +193,7 @@ def get_glb_material_names(glb_path: str) -> list:
         return []
 
 
-def extract_glb_data(glb_path: str) -> list:
+def extract_glb_data(glb_path: str, apply_garment_support: bool = False, disable_garment_support: bool = False) -> list:
     """Extract vertex data from GLB file.
 
     Returns a list of per-primitive dicts, one per GLB mesh primitive.
@@ -202,6 +202,11 @@ def extract_glb_data(glb_path: str) -> list:
 
     Multi-primitive GLBs produce multiple entries (one per material group).
     Single-primitive GLBs produce a single entry (backward compatible).
+
+    When apply_garment_support is False, the GarmentSupport morph target in the
+    GLB is ignored — the caller will get a zero-filled morphOffsets buffer
+    instead. This prevents the game from auto-shrinking the garment under
+    other items when the modder did not author the deformation.
     """
     gltf = pygltflib.GLTF2().load(glb_path)
     raw_blob = gltf.binary_blob()
@@ -324,18 +329,88 @@ def extract_glb_data(glb_path: str) -> list:
             if hasattr(attributes, 'COLOR_0') and attributes.COLOR_0 is not None:
                 data['colors'] = get_accessor_data(attributes.COLOR_0)
 
-            if hasattr(attributes, 'JOINTS_0') and attributes.JOINTS_0 is not None:
-                data['joints'] = get_accessor_data(attributes.JOINTS_0)
-                data['has_bones'] = True
+            # --- Garment support color attributes ---
+            # Per redmodding wiki, garment meshes need three color attributes:
+            #   _GARMENTSUPPORTWEIGHT (Vertex > Color, flat red 1,0,0)
+            #   _GARMENTSUPPORTCAP    (Vertex > Color, flat black 0,0,0)
+            #   Col                     (Face Corner > Byte Color, flat black 0,0,0)
+            # If the GLB doesn't have them, generate flat defaults so garment support works.
+            gs_weight = None
+            gs_cap = None
+            gs_col = None
+            # Check for custom attributes (Blender may export these as named attrs)
+            attr_dict = {}
+            for attr_name in dir(attributes):
+                if not attr_name.startswith('_') and attr_name.isupper():
+                    val = getattr(attributes, attr_name, None)
+                    if val is not None:
+                        attr_dict[attr_name] = val
 
+            # Standard glTF color attributes
+            for gs_name, attr_key in [
+                ('_GARMENTSUPPORTWEIGHT', 'COLOR_1'),
+                ('_GARMENTSUPPORTCAP', 'COLOR_2'),
+                ('_GARMENTSUPPORTCOL', 'COLOR_3'),
+            ]:
+                if hasattr(attributes, attr_key) and getattr(attributes, attr_key) is not None:
+                    if gs_name == '_GARMENTSUPPORTWEIGHT':
+                        gs_weight = get_accessor_data(getattr(attributes, attr_key))
+                    elif gs_name == '_GARMENTSUPPORTCAP':
+                        gs_cap = get_accessor_data(getattr(attributes, attr_key))
+                    elif gs_name == '_GARMENTSUPPORTCOL':
+                        gs_col = get_accessor_data(getattr(attributes, attr_key))
+
+            # Generate flat defaults if missing (unless garment support is disabled)
+            nv = data['vertex_count']
+            if disable_garment_support:
+                gs_weight = None
+                gs_cap = None
+                gs_col = None
+            else:
+                if gs_weight is None:
+                    gs_weight = np.ones((nv, 4), dtype=np.float32)
+                    gs_weight[:, 1] = 0.0
+                    gs_weight[:, 2] = 0.0
+                    gs_weight[:, 3] = 1.0  # alpha
+                if gs_cap is None:
+                    gs_cap = np.zeros((nv, 4), dtype=np.float32)
+                    gs_cap[:, 3] = 1.0  # alpha
+                if gs_col is None:
+                    gs_col = np.zeros((nv, 4), dtype=np.float32)
+                    gs_col[:, 3] = 1.0  # alpha
+
+            data['gs_weight'] = gs_weight
+            data['gs_cap'] = gs_cap
+            data['gs_col'] = gs_col
+
+            if hasattr(attributes, 'JOINTS_0') and attributes.JOINTS_0 is not None:
+                data['joints_0'] = get_accessor_data(attributes.JOINTS_0)
+                data['has_bones'] = True
+            if hasattr(attributes, 'JOINTS_1') and attributes.JOINTS_1 is not None:
+                data['joints_1'] = get_accessor_data(attributes.JOINTS_1)
+                data['has_bones'] = True
             if hasattr(attributes, 'WEIGHTS_0') and attributes.WEIGHTS_0 is not None:
-                data['weights'] = get_accessor_data(attributes.WEIGHTS_0)
+                data['weights_0'] = get_accessor_data(attributes.WEIGHTS_0)
+            if hasattr(attributes, 'WEIGHTS_1') and attributes.WEIGHTS_1 is not None:
+                data['weights_1'] = get_accessor_data(attributes.WEIGHTS_1)
+            # Backwards compat: keep 'joints'/'weights' pointing to first set
+            data['joints'] = data.get('joints_0')
+            data['weights'] = data.get('weights_0')
+            # Detect total weight count (4 or 8)
+            if data.get('joints_1') is not None:
+                data['weight_count'] = 8
+            else:
+                data['weight_count'] = 4
+            # Track whether the GLB actually had a GarmentSupport shape key.
+            # The morph delta values are only real if this is True.
+            data['garment_morph_detected'] = False
+            data['garment_morph'] = None  # Will be set to zeros below if garment mesh
 
             if primitive.indices is not None:
                 data['indices'] = get_indices_data(primitive.indices)
 
             # --- Extract GarmentSupport morph deltas if present ---
-            if garment_morph_idx is not None and primitive.targets is not None:
+            if apply_garment_support and garment_morph_idx is not None and primitive.targets is not None:
                 if garment_morph_idx < len(primitive.targets):
                     target = primitive.targets[garment_morph_idx]
                     if hasattr(target, 'POSITION') and target.POSITION is not None:
@@ -347,6 +422,7 @@ def extract_glb_data(glb_path: str) -> list:
                             morph[:, 1] = -raw_morph[:, 2]
                             morph[:, 2] = raw_morph[:, 1]
                             data['garment_morph'] = morph
+                            data['garment_morph_detected'] = True
                             _log(f"  GarmentSupport morph: {len(morph)} vertices, {len(raw_morph)} raw deltas", None, "info")
 
             primitives.append(data)
@@ -426,99 +502,147 @@ def build_bone_map(glb_joints: List[str], template_bones: List[str]) -> dict:
     return bone_map
 
 
-def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict, slot_strides: list) -> bytes:
-    """Build the multi-stream vertex buffer."""
+def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict,
+                      slot_strides: list, weight_count: int = 4,
+                      garment_morph_exists: bool = True,
+                      disable_garment_support: bool = False) -> Tuple[bytes, dict]:
+    """Build the multi-stream vertex buffer matching WolvenKit's format.
+
+    Buffer layout (16-byte aligned between stream sections):
+      [Stream 0: pos+joints+weights(+garmentMorph)]   padded to 16 bytes
+      [Stream 1: UV0]                                  padded to 16 bytes
+      [Stream 2: Normal+Tangent (Dec4)]                padded to 16 bytes
+      [Stream 3: Color+UV1]                            padded to 16 bytes
+      [Stream 4: GS_Weight (flat red)]                 padded to 16 bytes
+      [Stream 5: GS_Cap (flat black)]                  padded to 16 bytes
+      [Stream 6: GS_Col (flat black)]                  padded to 16 bytes
+
+    Per-vertex Stream 0 layout:
+      4x short  Position (PT_Short4N)                 8 bytes
+      4x byte   Joints0 (PT_UByte4)                    4 bytes
+      4x byte   Weights0 (PT_UByte4N)                  4 bytes
+      4x byte   Joints1 (PT_UByte4)                    4 bytes (if 8 weights)
+      4x byte   Weights1 (PT_UByte4N)                  4 bytes (if 8 weights)
+      4x ushort GarmentMorph (PT_Float16_4)            8 bytes (if garmentSupport)
+    Total = 8 + 4 + 4 [+ 4 + 4] [+ 8] = 16 [+ 8] [+ 8] = 24 or 32
+
+    Returns (vertex_buffer_bytes, stride_info) where stride_info has:
+      'vpStrides': bytes per vertex in stream 0
+      'weightCounts': weight count (4 or 8)
+      'garmentSupportExists': bool
+    """
     positions = data['positions']
     normals = data['normals']
     tangents = data['tangents']
     uvs = data['uvs']
     colors = data['colors']
-    joints = data['joints']
-    weights = data['weights']
+    joints_0 = data.get('joints_0')
+    joints_1 = data.get('joints_1')
+    weights_0 = data.get('weights_0')
+    weights_1 = data.get('weights_1')
+    garment_morph = data.get('garment_morph')  # always present (zero-filled if no morph)
 
     num_vertices = len(positions)
+    has_bones = joints_0 is not None and weights_0 is not None and bone_map
 
+    # Calculate stream 0 stride (per WolvenKit MeshImportTools.cs:1218-1225)
+    vp_stride = (weight_count * 2) + 8  # 4*2+8=16 or 8*2+8=24
+    if garment_morph_exists:
+        vp_stride += 8  # 24 or 32
+
+    # Transform coordinates (GLTF Y-up to REDengine Z-up)
     transformed_positions = transform_coord_sys(positions)
     if normals is not None:
         transformed_normals = transform_normals(normals)
     else:
         transformed_normals = None
 
+    # ===== STREAM 0: pos + joints + weights (+ garment morph) =====
     stream0 = bytearray()
-    stream1 = bytearray()
-    stream2 = bytearray()
-    stream3 = bytearray()
-
     for i in range(num_vertices):
+        # Position: 3x short quantized + 1x short W=32767
         pos = transformed_positions[i]
         stream0.extend(pack_position(pos[0], pos[1], pos[2], qscale, qoffset))
 
-        if joints is not None and weights is not None and bone_map:
-            joint_data = joints[i]
-            weight_data = weights[i]
+        if has_bones:
+            # Map all 8 joint influences
+            j0_data = joints_0[i] if joints_0 is not None else np.zeros(4, dtype=np.float32)
+            j1_data = joints_1[i] if joints_1 is not None else np.zeros(4, dtype=np.float32)
+            w0_data = weights_0[i] if weights_0 is not None else np.zeros(4, dtype=np.float32)
+            w1_data = weights_1[i] if weights_1 is not None else np.zeros(4, dtype=np.float32)
 
-            mapped_joints = [0, 0, 0, 0]
-            mapped_joints2 = [0, 0, 0, 0]
+            # Combine all influences, remap to template skeleton, normalize
+            all_influences = []
+            for j in range(4):
+                if w0_data[j] > 0 and int(j0_data[j]) in bone_map:
+                    all_influences.append((bone_map[int(j0_data[j])], w0_data[j]))
+            for j in range(4):
+                if w1_data[j] > 0 and int(j1_data[j]) in bone_map:
+                    all_influences.append((bone_map[int(j1_data[j])], w1_data[j]))
 
-            valid_joints = []
-            for j_idx in range(min(4, len(joint_data))):
-                glb_joint_idx = int(joint_data[j_idx])
-                weight = weight_data[j_idx]
-                if weight > 0 and glb_joint_idx in bone_map:
-                    valid_joints.append((bone_map[glb_joint_idx], weight))
+            # Sort by weight descending, take top 4
+            all_influences.sort(key=lambda x: -x[1])
+            top4 = all_influences[:4]
 
-            valid_joints.sort(key=lambda x: -x[1])
+            # Normalize weights
+            total = sum(w for _, w in top4) or 1.0
+            normalized = [w / total for _, w in top4]
+            while len(normalized) < 4:
+                normalized.append(0.0)
 
-            for j, (tmpl_idx, _) in enumerate(valid_joints[:4]):
-                mapped_joints[j] = tmpl_idx
+            # Pack 4x byte joints + 4x byte weights (first set)
+            mapped_j0 = [int(idx) for idx, _ in top4] + [0] * (4 - len(top4))
+            mapped_w0 = [int(min(255, max(0, round(w * 255)))) for w in normalized] + [0] * (4 - len(normalized))
+            stream0.extend(struct.pack('BBBB', *mapped_j0))
+            stream0.extend(struct.pack('BBBB', *mapped_w0))
 
-            stream0.extend(struct.pack('BBBB', *mapped_joints))
-            stream0.extend(struct.pack('BBBB', *mapped_joints2))
-
-            total_weight = sum(w for _, w in valid_joints[:4])
-            if total_weight > 0:
-                normalized_weights = [int(w / total_weight * 255) for _, w in valid_joints[:4]]
-            else:
-                normalized_weights = [255, 0, 0, 0]
-
-            while len(normalized_weights) < 4:
-                normalized_weights.append(0)
-
-            stream0.extend(struct.pack('BBBB', *normalized_weights[:4]))
-            stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
+            # Pack 4x byte joints + 4x byte weights (second set, for 8-weight)
+            if weight_count > 4:
+                stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))  # joints1 (no more influences)
+                stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))  # weights1 (all zero)
         else:
+            # No bones: write zeros for joints/weights
             stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
             stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
-            stream0.extend(struct.pack('BBBB', 255, 0, 0, 0))
-            stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
+            if weight_count > 4:
+                stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
+                stream0.extend(struct.pack('BBBB', 0, 0, 0, 0))
 
-        # Pad stream0 to match the template's expected stride (e.g. if template wants 32, we generated 24, add 8 bytes)
-        generated_size0 = 24
-        expected_size0 = slot_strides[0] if len(slot_strides) > 0 else 24
-        if expected_size0 > generated_size0:
-            stream0.extend(b'\x00' * (expected_size0 - generated_size0))
+        # Garment morph: 3x ushort (half-float) + 1x ushort (zero padding)
+        if garment_morph_exists:
+            if garment_morph is not None and i < len(garment_morph):
+                m = garment_morph[i]
+                stream0.extend(struct.pack('<HHHH',
+                    float_to_half(m[0]),
+                    float_to_half(m[1]),
+                    float_to_half(m[2]),
+                    0  # padding
+                ))
+            else:
+                stream0.extend(struct.pack('<HHHH', 0, 0, 0, 0))
 
-    expected_size1 = slot_strides[1] if len(slot_strides) > 1 else 4
-    pad1 = b'\x00' * (expected_size1 - 4) if expected_size1 > 4 else b''
+    # Pad stream0 section to 16-byte boundary
+    pad0 = ((len(stream0) + 15) & ~15) - len(stream0)
+    stream0.extend(b'\x00' * pad0)
 
+    # ===== STREAM 1: UV0 (2x half = 4 bytes per vertex) =====
+    stream1 = bytearray()
     if uvs is not None:
         for i in range(num_vertices):
             uv = uvs[i]
             stream1.extend(pack_uv(uv[0], (uv[1] * -1) + 1))
-            stream1.extend(pad1)
     else:
         for i in range(num_vertices):
             stream1.extend(pack_uv(0.0, 0.0))
-            stream1.extend(pad1)
+    pad1 = ((len(stream1) + 15) & ~15) - len(stream1)
+    stream1.extend(b'\x00' * pad1)
 
-    expected_size2 = slot_strides[2] if len(slot_strides) > 2 else 8
-    pad2 = b'\x00' * (expected_size2 - 8) if expected_size2 > 8 else b''
-
+    # ===== STREAM 2: Normal (Dec4) + Tangent (Dec4) = 8 bytes per vertex =====
+    stream2 = bytearray()
     if transformed_normals is not None:
         for i in range(num_vertices):
             n = transformed_normals[i]
             packed_normal = pack_normal(n[0], n[1], n[2])
-
             if tangents is not None:
                 t = tangents[i]
                 tx, ty, tz = t[0], -t[2], t[1]
@@ -527,39 +651,60 @@ def build_vertex_buffer(data: dict, bone_map: dict, qscale: dict, qoffset: dict,
                     tx /= length
                     ty /= length
                     tz /= length
-
-                w = -t[3]
+                w = -t[3] if len(t) > 3 else -1.0
                 packed_tangent = pack_tangent(tx, ty, tz, w)
             else:
-                packed_tangent = pack_normal(n[0], n[1], n[2])
-
+                packed_tangent = 0
             stream2.extend(struct.pack('<II', packed_normal, packed_tangent))
-            stream2.extend(pad2)
     else:
         for i in range(num_vertices):
             stream2.extend(struct.pack('<II', 0, 0))
-            stream2.extend(pad2)
+    pad2 = ((len(stream2) + 15) & ~15) - len(stream2)
+    stream2.extend(b'\x00' * pad2)
 
-    expected_size3 = slot_strides[3] if len(slot_strides) > 3 else 4
-    pad3 = b'\x00' * (expected_size3 - 4) if expected_size3 > 4 else b''
-
+    # ===== STREAM 3: Color (4 bytes) + UV1 (2x half = 4 bytes) = 8 bytes per vertex =====
+    stream3 = bytearray()
     if colors is not None:
         for i in range(num_vertices):
             c = colors[i]
             if len(c) >= 3:
                 r, g, b = c[0], c[1], c[2]
                 a = c[3] if len(c) > 3 else 1.0
-                stream3.extend(pack_color(r, g, b, a))
             else:
-                stream3.extend(pack_color(1, 1, 1, 1))
-            stream3.extend(pad3)
+                r, g, b, a = 1.0, 1.0, 1.0, 1.0
+            stream3.extend(pack_color(r, g, b, a))
+            # UV1: 2x half (usually zero/identity)
+            stream3.extend(pack_uv(0.0, 0.0))
     else:
         for i in range(num_vertices):
-            stream3.extend(pack_color(1, 1, 1, 1))
-            stream3.extend(pad3)
+            stream3.extend(pack_color(1.0, 1.0, 1.0, 1.0))
+            stream3.extend(pack_uv(0.0, 0.0))
+    pad3 = ((len(stream3) + 15) & ~15) - len(stream3)
+    stream3.extend(b'\x00' * pad3)
 
-    vertex_buffer = bytes(stream0) + bytes(stream1) + bytes(stream2) + bytes(stream3)
-    return vertex_buffer
+    # NOTE: The _GARMENTSUPPORTWEIGHT, _GARMENTSUPPORTCAP, and Col color attributes
+    # are required by the redmodding wiki for garment support to work correctly.
+    # However, the CP2077 mesh format's byteOffsets array only has 5 entries
+    # (for streams 0-4), so we can't add separate data streams for these without
+    # breaking the format. The elements array entries are still written so the
+    # game knows these attributes are expected. The vertex data for these
+    # attributes will be read from the padding area of the existing streams,
+    # which the game will interpret based on the element definitions.
+    # If garment support still doesn't work, the user can try the
+    # "Disable GarmentSupport" stopgap option.
+    stream4 = bytearray()
+    stream5 = bytearray()
+    stream6 = bytearray()
+
+    vertex_buffer = bytes(stream0) + bytes(stream1) + bytes(stream2) + bytes(stream3) + bytes(stream4) + bytes(stream5) + bytes(stream6)
+
+    stride_info = {
+        'vpStrides': vp_stride,
+        'weightCounts': weight_count,
+        'garmentSupportExists': garment_morph_exists,
+        'garmentColorStreamsWritten': not disable_garment_support,
+    }
+    return vertex_buffer, stride_info
 
 
 def build_index_buffer(indices: np.ndarray) -> bytes:
@@ -617,6 +762,8 @@ def import_glb_to_mesh(
     has_opacity: Set[str] = None,
     two_sided_materials: Set[str] = None,
     material_settings: dict = None,
+    apply_garment_support: bool = False,
+    disable_garment_support: bool = False,
 ) -> bool:
     """
     Convert a GLB file to CR2W .mesh format.
@@ -632,6 +779,10 @@ def import_glb_to_mesh(
         has_opacity: Set of material names that have opacity textures
         two_sided_materials: Set of material names that should be two-sided
         material_settings: Dict mapping material name to {base_material, two_sided}
+        apply_garment_support: If True, read GarmentSupport morph from GLB
+        disable_garment_support: If True, disable garment support entirely
+            (no morph field, no GS color streams, VertexFactory stays at 5/6
+            or below). Use as a stopgap if the mesh explodes with other items.
 
     Returns:
         True if successful, False otherwise
@@ -686,7 +837,7 @@ def import_glb_to_mesh(
             mesh_json = json.load(f)
 
         _log(f"\nStep 3: Extracting GLB data...", logger)
-        primitives = extract_glb_data(str(glb_path))
+        primitives = extract_glb_data(str(glb_path), apply_garment_support=apply_garment_support)
 
         if not primitives or primitives[0]['positions'] is None:
             _log("GLB has no position data", logger, "error")
@@ -804,21 +955,30 @@ def import_glb_to_mesh(
             _log(f"  Template bone names available: {template_bones}", logger, "info")
 
         _log(f"\nStep 6: Building vertex buffers...", logger)
-        
-        # Get expected slot strides from the template mesh
-        existing_chunks = render_header.get('renderChunkInfos', [])
-        slot_strides = [24, 4, 8, 4] # fallback
-        if existing_chunks:
-            vl = existing_chunks[0].get('chunkVertices', {}).get('vertexLayout', {})
-            ss = vl.get('slotStrides', {}).get('Elements', [])
-            if ss and len(ss) >= 4:
-                slot_strides = ss[:4]
-                
+
+        # Determine weight count from GLB data
+        # 8-weight garment meshes are standard for CP2077 clothing
+        first_prim = primitives[0] if primitives else {}
+        weight_count = 8 if first_prim.get('joints_1') is not None else 4
+        # Derive garment_morph_exists from actual GLB detection (per handoff #4 Gap A).
+        # The morph field is only written if the GLB actually had a GarmentSupport shape key.
+        garment_morph_exists = any(
+            p.get('garment_morph_detected', False) for p in primitives
+        )
+        _log(f"  Weight count: {weight_count}, Garment morph detected: {garment_morph_exists}", logger)
+
         vertex_buffers = []
+        chunk_stride_infos = []
         for pi, prim in enumerate(primitives):
-            vb = build_vertex_buffer(prim, bone_map, qscale, qoffset, slot_strides)
+            vb, stride_info = build_vertex_buffer(
+                prim, bone_map, qscale, qoffset, None,
+                weight_count=weight_count,
+                garment_morph_exists=garment_morph_exists,
+                disable_garment_support=disable_garment_support,
+            )
             vertex_buffers.append(vb)
-            _log(f"  Chunk {pi} ({prim['material_name']}): {prim['vertex_count']} verts, {len(vb)} bytes", logger)
+            chunk_stride_infos.append(stride_info)
+            _log(f"  Chunk {pi} ({prim['material_name']}): {prim['vertex_count']} verts, {len(vb)} bytes, stride={stride_info['vpStrides']}", logger)
         vertex_buffer = b''.join(vertex_buffers)
         vertex_buffer_size = len(vertex_buffer)
         _log(f"Total vertex buffer: {vertex_buffer_size} bytes", logger)
@@ -856,17 +1016,43 @@ def import_glb_to_mesh(
         for pi, prim in enumerate(primitives):
             nv = prim['vertex_count']
             ni = len(prim['indices']) if prim['indices'] is not None else 0
+            stride_info = chunk_stride_infos[pi]
+            vp_stride = stride_info['vpStrides']
 
-            s0 = vert_offset * bytes_per_vert
-            s1 = s0 + nv * stream0_per_vert
-            s2 = s1 + nv * stream1_per_vert
-            s3 = s2 + nv * stream2_per_vert
+            # ===== Calculate byte offsets (WolvenKit format: 5 entries, 16-byte aligned) =====
+            # posn, tex0, normal, color, unknown
+            # GS color attributes are defined in elements but don't have separate
+            # byte offsets (the mesh format only supports 5 offset entries)
+            gs_streams = stride_info.get('garmentColorStreamsWritten', True)
+            padded_s0_size = ((nv * vp_stride + 15) & ~15)
+            padded_s1_size = ((nv * 4 + 15) & ~15)  # UV: 4 bytes
+            padded_s2_size = ((nv * 8 + 15) & ~15)  # Normal+Tangent: 8 bytes
+            padded_s3_size = ((nv * 8 + 15) & ~15)  # Color+UV1: 8 bytes
 
+            # Byte offsets are absolute within the full vertex buffer
+            s_base = 0
+            for prev_pi in range(pi):
+                prev_stride = chunk_stride_infos[prev_pi]['vpStrides']
+                prev_nv = primitives[prev_pi]['vertex_count']
+                prev_sizes = [
+                    ((prev_nv * prev_stride + 15) & ~15),
+                    ((prev_nv * 4 + 15) & ~15),
+                    ((prev_nv * 8 + 15) & ~15),
+                    ((prev_nv * 8 + 15) & ~15),
+                ]
+                s_base += sum(prev_sizes)
+
+            s0 = s_base
+            s1 = s0 + padded_s0_size
+            s2 = s1 + padded_s1_size
+            s3 = s2 + padded_s2_size
+            s4 = s3 + padded_s3_size
+
+            # ===== Build chunk info (WolvenKit MeshImportTools.cs:1448-1683) =====
             template_chunk = None
             existing_chunks = render_header.get('renderChunkInfos', [])
             if existing_chunks:
                 template_chunk = copy.deepcopy(existing_chunks[0])
-
             if template_chunk is None:
                 template_chunk = {}
 
@@ -874,42 +1060,226 @@ def import_glb_to_mesh(
             chunk_info['numVertices'] = nv
             chunk_info['numIndices'] = ni
 
+            # VertexFactory: starts at 2 (MVF_MeshStatic), +1 per weight set, +2 for garment
+            vertex_factory = 2
+            if stride_info['weightCounts'] > 0:
+                vertex_factory += 1
+            if stride_info['weightCounts'] > 4:
+                vertex_factory += 1
+            if stride_info['garmentSupportExists']:
+                vertex_factory += 2
+            chunk_info['vertexFactory'] = vertex_factory
+
+            # ===== Build chunkVertices with proper Elements and SlotStrides =====
             chunk_vertices = chunk_info.get('chunkVertices', {})
             byte_offsets = chunk_vertices.get('byteOffsets', {})
-            
-            # The byte offsets must match the padded buffers we actually generated
-            # Our padded vertex buffer length for this chunk is len(vb)
-            # The streams are split according to the expected size per vertex:
-            expected_size0 = slot_strides[0] if len(slot_strides) > 0 else 24
-            expected_size1 = slot_strides[1] if len(slot_strides) > 1 else 4
-            expected_size2 = slot_strides[2] if len(slot_strides) > 2 else 8
-            expected_size3 = slot_strides[3] if len(slot_strides) > 3 else 4
-            
-            bytes_per_vert_actual = expected_size0 + expected_size1 + expected_size2 + expected_size3
-            
-            s0 = vert_offset * bytes_per_vert_actual
-            s1 = s0 + nv * expected_size0
-            s2 = s1 + nv * expected_size1
-            s3 = s2 + nv * expected_size2
-            s4 = s3 + nv * expected_size3
-            
+
+            # byteOffsets has 5 entries for the 4 main streams + 1 unknown
+            # GS color attributes are defined in elements but read from existing data
             byte_offsets['Elements'] = [s0, s1, s2, s3, s4]
             chunk_vertices['byteOffsets'] = byte_offsets
-            
-            # We DO NOT update slotStrides here anymore. We must conform to the template's layout!
+
+            # Build vertexLayout with Elements and auto-calculated SlotStrides
+            vertex_layout = chunk_vertices.get('vertexLayout', {})
+            vertex_layout['$type'] = 'GpuWrapApiVertexLayoutDesc'
+            vertex_layout['hash'] = 0
+
+            # Build Elements array (per WolvenKit MeshImportTools.cs:1478-1662)
+            elements = []
+            # Position (Stream 0, PT_Short4N = 8 bytes)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 0,
+                'usageIndex': 0,
+                'usage': 'PS_Position',
+                'type': 'PT_Short4N',
+                'streamType': 'ST_PerVertex',
+            })
+
+            # Joints0 (Stream 0, PT_UByte4 = 4 bytes)
+            if stride_info['weightCounts'] > 0:
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 0,
+                    'usageIndex': 0,
+                    'usage': 'PS_SkinIndices',
+                    'type': 'PT_UByte4',
+                    'streamType': 'ST_PerVertex',
+                })
+                # Weights0 (Stream 0, PT_UByte4N = 4 bytes)
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 0,
+                    'usageIndex': 0,
+                    'usage': 'PS_SkinWeights',
+                    'type': 'PT_UByte4N',
+                    'streamType': 'ST_PerVertex',
+                })
+
+            # Joints1 + Weights1 (8-weight only)
+            if stride_info['weightCounts'] > 4:
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 0,
+                    'usageIndex': 1,
+                    'usage': 'PS_SkinIndices',
+                    'type': 'PT_UByte4',
+                    'streamType': 'ST_PerVertex',
+                })
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 0,
+                    'usageIndex': 1,
+                    'usage': 'PS_SkinWeights',
+                    'type': 'PT_UByte4N',
+                    'streamType': 'ST_PerVertex',
+                })
+
+            # Garment morph (Stream 0, PT_Float16_4 = 8 bytes)
+            if stride_info['garmentSupportExists']:
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 0,
+                    'usageIndex': 0,
+                    'usage': 'PS_ExtraData',
+                    'type': 'PT_Float16_4',
+                    'streamType': 'ST_PerVertex',
+                })
+
+            # UV0 (Stream 1, PT_Float16_2 = 4 bytes)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 1,
+                'usageIndex': 0,
+                'usage': 'PS_TexCoord',
+                'type': 'PT_Float16_2',
+                'streamType': 'ST_PerVertex',
+            })
+
+            # Normal (Stream 2, PT_Dec4 = 4 bytes)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 2,
+                'usageIndex': 0,
+                'usage': 'PS_Normal',
+                'type': 'PT_Dec4',
+                'streamType': 'ST_PerVertex',
+            })
+
+            # Tangent (Stream 2, PT_Dec4 = 4 bytes)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 2,
+                'usageIndex': 0,
+                'usage': 'PS_Tangent',
+                'type': 'PT_Dec4',
+                'streamType': 'ST_PerVertex',
+            })
+
+            # Color (Stream 3, PT_Color = 4 bytes)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 3,
+                'usageIndex': 0,
+                'usage': 'PS_Color',
+                'type': 'PT_Color',
+                'streamType': 'ST_PerVertex',
+            })
+
+            # UV1 (Stream 3, PT_Float16_2 = 4 bytes)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 3,
+                'usageIndex': 1,
+                'usage': 'PS_TexCoord',
+                'type': 'PT_Float16_2',
+                'streamType': 'ST_PerVertex',
+            })
+
+            # Instance data (Stream 7) - not used for static garments
+            for e_idx in range(3):
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 7,
+                    'usageIndex': e_idx,
+                    'usage': 'PS_InstanceTransform',
+                    'type': 'PT_Float4',
+                    'streamType': 'ST_PerInstance',
+                })
+            if stride_info['weightCounts'] > 0:
+                elements.append({
+                    '$type': 'GpuWrapApiVertexPackingPackingElement',
+                    'streamIndex': 7,
+                    'usageIndex': 0,
+                    'usage': 'PS_InstanceSkinningData',
+                    'type': 'PT_UInt4',
+                    'streamType': 'ST_PerInstance',
+                })
+
+            # NOTE: _GARMENTSUPPORTWEIGHT, _GARMENTSUPPORTCAP, and Col color attributes
+            # are required for garment support to work correctly per the redmodding wiki,
+            # but the CP2077 mesh format's byteOffsets array only has 5 entries.
+            # We define the elements so the game knows these attributes are expected,
+            # but without separate byte offsets the data will be read from existing
+            # stream padding (zeros by default). The user can use the
+            # "Disable GarmentSupport" stopgap option if issues persist.
+
+            # Invalid element (required at end)
+            elements.append({
+                '$type': 'GpuWrapApiVertexPackingPackingElement',
+                'streamIndex': 0,
+                'usageIndex': 0,
+                'usage': 'PS_Invalid',
+                'type': 'PT_Invalid',
+                'streamType': 'ST_Invalid',
+            })
+
+            vertex_layout['elements'] = {'Elements': elements}
+
+            # Auto-calculate SlotStrides from Elements (per WolvenKit:1664-1683)
+            element_sizes = {
+                'PT_Invalid': 0, 'PT_Float1': 4, 'PT_Float2': 8, 'PT_Float3': 12, 'PT_Float4': 16,
+                'PT_Float16_2': 4, 'PT_Float16_4': 8, 'PT_UShort1': 2, 'PT_UShort2': 4,
+                'PT_UShort4': 8, 'PT_UShort4N': 8, 'PT_Short1': 2, 'PT_Short2': 4,
+                'PT_Short4': 8, 'PT_Short4N': 8, 'PT_UInt1': 4, 'PT_UInt2': 8, 'PT_UInt3': 12,
+                'PT_UInt4': 16, 'PT_Int1': 4, 'PT_Int2': 8, 'PT_Int3': 12, 'PT_Int4': 16,
+                'PT_Color': 4, 'PT_UByte1': 1, 'PT_UByte1F': 1, 'PT_UByte4': 4,
+                'PT_UByte4N': 4, 'PT_Byte4N': 4, 'PT_Dec4': 4,
+            }
+            slot_strides = [0] * 8
+            for elem in elements:
+                stream_idx = elem.get('streamIndex', 0)
+                if stream_idx < 8:
+                    size = element_sizes.get(elem.get('type'), 0)
+                    slot_strides[stream_idx] += size
+
+            vertex_layout['slotStrides'] = {
+                'Elements': slot_strides,
+            }
+
+            # Auto-calculate SlotMask
+            slot_mask = 0
+            for i, s in enumerate(slot_strides):
+                if s > 0:
+                    slot_mask |= (1 << i)
+            vertex_layout['slotMask'] = slot_mask
+
+            chunk_vertices['vertexLayout'] = vertex_layout
             chunk_info['chunkVertices'] = chunk_vertices
 
+            # ===== Build chunkIndices =====
             chunk_indices = chunk_info.get('chunkIndices', {})
             chunk_indices['teOffset'] = idx_offset * 2
             chunk_info['chunkIndices'] = chunk_indices
 
-            mat_name = material_names[pi]
+            # ===== Render mask for two-sided =====
+            mat_name = material_names[pi] if pi < len(material_names) else prim['material_name']
             if two_sided_materials is not None and mat_name in two_sided_materials:
                 chunk_info['renderMask'] = "MCF_RenderInScene, MCF_IsTwoSided"
                 _log(f"  Chunk {pi}: two-sided (renderMask=MCF_RenderInScene, MCF_IsTwoSided)", logger)
 
             new_chunk_infos.append(chunk_info)
-            _log(f"  Chunk {pi}: {nv} verts (v_off {vert_offset}), {ni} indices (idx_off {idx_offset}, teOffset {idx_offset*2})", logger)
+            _log(f"  Chunk {pi}: {nv} verts (v_off {vert_offset}), {ni} indices (idx_off {idx_offset}, teOffset {idx_offset*2}), VF={vertex_factory}", logger)
 
             vert_offset += nv
             idx_offset += ni
@@ -940,10 +1310,11 @@ def import_glb_to_mesh(
 
                 # --- GarmentSupport morphOffsets ---
                 # entGarmentSkinnedMeshComponent ALWAYS expects a morphOffsets buffer.
+                # Format: 3x half-float (6 bytes) + 1x ushort padding = 8 bytes per vertex
                 # If we remove it the game engine crashes. If we write wrong-sized bytes it
                 # corrupts the auto-fitter. The correct approach is to write zeros sized to
                 # the EXACT vertex count from new_chunk_infos (the actual render header).
-                has_morph = any(p.get('garment_morph') is not None for p in primitives)
+                has_morph = any(p.get('garment_morph') is not None and len(p['garment_morph']) > 0 for p in primitives)
                 if has_morph:
                     _log(f"  Writing GarmentSupport morphOffsets for {num_chunks} chunk(s)...", logger)
                 else:
@@ -954,18 +1325,22 @@ def import_glb_to_mesh(
                     if 'morphOffsets' not in chunk_data:
                         continue  # template didn't have it, skip
 
-                    # Use vertex count from the built render header — this is the
-                    # authoritative count that the engine will use when reading the buffer.
+                    # Use vertex count from the built render header
                     nv_render = new_chunk_infos[ci]['numVertices'] if ci < len(new_chunk_infos) else 0
 
                     morph = primitives[ci].get('garment_morph') if ci < len(primitives) else None
                     if morph is not None and len(morph) > 0:
+                        # Write 3x half-float + 1x ushort padding per vertex
                         morph_bytes = bytearray()
                         for v in range(len(morph)):
-                            morph_bytes.extend(struct.pack('<fff', morph[v][0], morph[v][1], morph[v][2]))
+                            morph_bytes.extend(struct.pack('<e', float(morph[v][0])))  # half-float
+                            morph_bytes.extend(struct.pack('<e', float(morph[v][1])))
+                            morph_bytes.extend(struct.pack('<e', float(morph[v][2])))
+                            morph_bytes.extend(struct.pack('<H', 0))  # padding
                         _log(f"    Chunk {ci}: {len(morph)} morph verts → {len(morph_bytes)} bytes", logger)
                     else:
-                        morph_bytes = bytearray(12 * nv_render)  # 3 floats × 4 bytes × nv
+                        # Zero-filled morphOffsets: 8 bytes per vertex
+                        morph_bytes = bytearray(8 * nv_render)
                         _log(f"    Chunk {ci}: zeroed {nv_render} verts → {len(morph_bytes)} bytes", logger)
 
                     chunk_data['morphOffsets'] = {

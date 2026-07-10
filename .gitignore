@@ -12,3 +12,6 @@ cpmp_config.json
 dump_*/
 cpmp-og.py
 CPMP_tags_and_ui_fixes_handoff.md
+Projects/
+CPMP_agent_handoff*.md
+

@@ -1,6 +1,0 @@
-factories:
-  - couture_doll\couture_doll.csv
-localization:
-  onscreens:
-    en-us:
-      - couture_doll\localization\en-us.json
