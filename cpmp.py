@@ -896,14 +896,18 @@ class PipelineWorker:
                     yaml_lines.append(f"    - !append {eq_slot}")
 
                 yaml_lines.append(f"  entityName: {entity_name}")
-                yaml_lines.append(f"  appearanceName: {entity_name}!{color}")
-                # NOTE: Do NOT add appearanceSuffixes: !append itemsFactoryAppearanceSuffix.LegsState
-                # for Dynamic Variants items. The foot-state is already handled at the COMPONENT
-                # level via &Lifted/&Flat/&FlatShoes/&HighHeels suffixes on mesh component names.
-                # Adding appearanceSuffixes would make the game append _Lifted/_Flat to the
-                # appearance NAME (e.g. couture_doll_bottom_root!espresso_Lifted), but the
-                # appearance file only has couture_doll_bottom_root — the game can't find the
-                # suffixed appearance and crashes on equip.
+                if is_foot_state:
+                    # Foot-state items use the classic per-suffix pattern (not Dynamic Variants).
+                    # appearanceSuffixes tells the engine to resolve LegsState at runtime,
+                    # appending the state suffix to the appearanceName to look up the correct
+                    # appearance definition.  Matches the reference mod (Hyst's Fishnet Tights).
+                    yaml_lines.append(f"  appearanceName: {entity_name}_{color}_")
+                    yaml_lines.append(f"  appearanceSuffixes:")
+                    yaml_lines.append(f"    - !append itemsFactoryAppearanceSuffix.LegsState")
+                else:
+                    # Non-foot-state items use Dynamic Variants — single shared appearance
+                    # with !color suffix resolved by the DynamicAppearance visual tag.
+                    yaml_lines.append(f"  appearanceName: {entity_name}!{color}")
                 yaml_lines.append(f"  displayName: LocKey#{mod_base}_{name}_loc_name_{color}")
                 yaml_lines.append(f"  localizedDescription: LocKey#{mod_base}_{name}_loc_desc")
                 yaml_lines.append(f"  quality: {quality}")
@@ -1101,39 +1105,69 @@ class PipelineWorker:
             is_foot_state = bool(it.get('foot_states', []))
             item_colors = [c for c in colors if c in it.get('found_variants', colors)]
 
-            # 1. Assemble Root Entity
-            root = copy.deepcopy(tpl_root)
-            root_apps = root['Data']['RootChunk'].setdefault('appearances', [])
-            root_apps.clear()
-            root_apps.append({
-                "$type": "entTemplateAppearance",
-                "appearanceName": {"$type": "CName", "$storage": "string", "$value": entity_name},
-                "appearanceResource": {
-                    "DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mod_base}_{name}_appearance.app"},
-                    "Flags": "Soft"
-                },
-                "name": {"$type": "CName", "$storage": "string", "$value": entity_name}
-            })
-            root['Data']['RootChunk']['defaultAppearance'] = {"$type": "CName", "$storage": "string", "$value": "default"}
-            
-            # Inject dynamic appearance hooks
-            try:
-                v_tags = root['Data']['RootChunk']['visualTagsSchema']['Data']['visualTags']['tags']
-                if not any(t.get('$value') == 'DynamicAppearance' for t in v_tags):
-                    v_tags.append({"$type": "CName", "$storage": "string", "$value": "DynamicAppearance"})
-            except Exception:
-                pass
-
-            with open(out_dir / f"{mod_base}_{name}_root.ent.json", 'w') as f:
-                json.dump(root, f, indent=2)
-
-            # Resolve active foot states for this item (used by mesh entity generation below)
+            # Resolve active foot states early — needed by root entity, app file, and mesh entity generation.
             active_foot_states = [fs for fs in ('lifted', 'flat', 'heel') if fs in it.get('foot_states', [])]
             if not active_foot_states:
                 active_foot_states = ['lifted']
 
-            # No per-color root entities needed! Dynamic variants handle color
-            # resolution automatically via the !color suffix and DynamicAppearance tag.
+            # GarmentSupport component prefix map (per redmodding wiki).
+            SLOT_TO_GARMENT_PREFIX = {
+                'GenericLegClothing': 'l1',
+                'GenericInnerChestClothing': 't1',
+                'GenericOuterChestClothing': 't2',
+                'GenericTorsoClothing': 't1',
+                'GenericFootClothing': 's1',
+                'GenericHeadClothing': 'h1',
+            }
+            garment_prefix = SLOT_TO_GARMENT_PREFIX.get(it.get('slot', ''), '')
+
+            # 1. Assemble Root Entity
+            root = copy.deepcopy(tpl_root)
+            root_apps = root['Data']['RootChunk'].setdefault('appearances', [])
+            root_apps.clear()
+            root['Data']['RootChunk']['defaultAppearance'] = {"$type": "CName", "$storage": "string", "$value": "default"}
+
+            if not is_foot_state:
+                # Non-foot-state: single appearance for Dynamic Variants (color resolved by !color suffix)
+                root_apps.append({
+                    "$type": "entTemplateAppearance",
+                    "appearanceName": {"$type": "CName", "$storage": "string", "$value": entity_name},
+                    "appearanceResource": {
+                        "DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mod_base}_{name}_appearance.app"},
+                        "Flags": "Soft"
+                    },
+                    "name": {"$type": "CName", "$storage": "string", "$value": entity_name}
+                })
+                # Inject dynamic appearance hooks
+                try:
+                    v_tags = root['Data']['RootChunk']['visualTagsSchema']['Data']['visualTags']['tags']
+                    if not any(t.get('$value') == 'DynamicAppearance' for t in v_tags):
+                        v_tags.append({"$type": "CName", "$storage": "string", "$value": "DynamicAppearance"})
+                except Exception:
+                    pass
+            else:
+                # Foot-state items: one appearance per state+color, matching the reference
+                # mod (Hyst's Fishnet Tights). The engine's itemsFactoryAppearanceSuffix.LegsState
+                # takes the YAML appearanceName + state suffix to look up these appearances.
+                STATE_MAP_ROOT = {'lifted': 'lifted', 'flat': 'flat', 'heel': 'high'}
+                for color in item_colors:
+                    for user_fs, state_name in STATE_MAP_ROOT.items():
+                        if user_fs not in active_foot_states:
+                            continue
+                        appear_name = f"{entity_name}_{state_name}_{color}"
+                        instance_name = f"{entity_name}_{color}_&Female&{state_name.capitalize()}"
+                        root_apps.append({
+                            "$type": "entTemplateAppearance",
+                            "appearanceName": {"$type": "CName", "$storage": "string", "$value": appear_name},
+                            "appearanceResource": {
+                                "DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mod_base}_{name}_appearance.app"},
+                                "Flags": "Default"
+                            },
+                            "name": {"$type": "CName", "$storage": "string", "$value": instance_name}
+                        })
+
+            with open(out_dir / f"{mod_base}_{name}_root.ent.json", 'w') as f:
+                json.dump(root, f, indent=2)
 
             # 2. Assemble Appearance Resources
             app = copy.deepcopy(tpl_app)
@@ -1144,70 +1178,122 @@ class PipelineWorker:
                 pass
             app_apps = app['Data']['RootChunk'].setdefault('appearances', [])
             app_apps.clear()
-            new_def = {
-                "$type": "appearanceAppearanceDefinition",
-                "censorFlags": 0,
-                "components": [],
-                "cookedDataPathOverride": {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"},
-                "forcedLodDistance": 0,
-                "hitRepresentationOverrides": [],
-                "inheritedVisualTags": {"$type": "redTagList", "tags": []},
-                "looseDependencies": [],
-                "name": {"$type": "CName", "$storage": "string", "$value": entity_name},
-                "partsMasks": [],
-                "partsOverrides": [],
-                "partsValues": [
-                    {
-                        "$type": "appearanceAppearancePart",
-                        "resource": {"DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mod_base}_{name}_mesh_entity.ent"}, "Flags": "Soft"}
-                    }
-                ],
-                "proxyMesh": {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"},
-                "parentAppearance": {"$type": "CName", "$storage": "string", "$value": "None"},
-                "visualTags": {"$type": "redTagList", "tags": []}
-            }
-            # Toggleable Feet (ArchiveXL): only two real tags exist — HighHeels
-            # and FlatShoes. "Lifted" is the neutral/default state and needs no
-            # tag at all, so it's intentionally not mapped to anything here.
-            # Only applies to Feet-slot items ($base must be a foot item).
-            if it.get('slot') == 'GenericFootClothing':
-                foot_states = it.get('foot_states', [])
-                if 'heel' in foot_states:
-                    new_def["visualTags"]["tags"].append({"$type": "CName", "$storage": "string", "$value": "HighHeels"})
-                if 'flat' in foot_states:
-                    new_def["visualTags"]["tags"].append({"$type": "CName", "$storage": "string", "$value": "FlatShoes"})
-                if 'heel' in foot_states and 'flat' in foot_states:
-                    self.log(f"  ⚠  '{name}': both Flat and Heel checked — an item can only be "
-                              f"one at a time in-game. Both tags will be written, but the game's "
-                              f"behavior with conflicting tags is undefined. Pick one.", 'warn')
-            app_apps.append({"HandleId": "1", "Data": new_def})
+
+            if not is_foot_state:
+                # Non-foot-state: single appearance for Dynamic Variants
+                new_def = {
+                    "$type": "appearanceAppearanceDefinition",
+                    "censorFlags": 0,
+                    "components": [],
+                    "cookedDataPathOverride": {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"},
+                    "forcedLodDistance": 0,
+                    "hitRepresentationOverrides": [],
+                    "inheritedVisualTags": {"$type": "redTagList", "tags": []},
+                    "looseDependencies": [],
+                    "name": {"$type": "CName", "$storage": "string", "$value": entity_name},
+                    "partsMasks": [],
+                    "partsOverrides": [],
+                    "partsValues": [
+                        {
+                            "$type": "appearanceAppearancePart",
+                            "resource": {"DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mod_base}_{name}_mesh_entity.ent"}, "Flags": "Soft"}
+                        }
+                    ],
+                    "proxyMesh": {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"},
+                    "parentAppearance": {"$type": "CName", "$storage": "string", "$value": "None"},
+                    "visualTags": {"$type": "redTagList", "tags": []}
+                }
+                # Toggleable Feet (ArchiveXL): only two real tags exist — HighHeels
+                # and FlatShoes. "Lifted" is the neutral/default state and needs no
+                # tag at all, so it's intentionally not mapped to anything here.
+                # Only applies to Feet-slot items ($base must be a foot item).
+                if it.get('slot') == 'GenericFootClothing':
+                    foot_states = it.get('foot_states', [])
+                    if 'heel' in foot_states:
+                        new_def["visualTags"]["tags"].append({"$type": "CName", "$storage": "string", "$value": "HighHeels"})
+                    if 'flat' in foot_states:
+                        new_def["visualTags"]["tags"].append({"$type": "CName", "$storage": "string", "$value": "FlatShoes"})
+                    if 'heel' in foot_states and 'flat' in foot_states:
+                        self.log(f"  ⚠  '{name}': both Flat and Heel checked — an item can only be "
+                                  f"one at a time in-game. Both tags will be written, but the game's "
+                                  f"behavior with conflicting tags is undefined. Pick one.", 'warn')
+                app_apps.append({"HandleId": "1", "Data": new_def})
+            else:
+                # Foot-state items: one appearance per state+color, matching reference mod.
+                # Each appearance points at the correct per-state mesh entity and specifies
+                # the component name within that entity.
+                STATE_MAP_APP = {
+                    'lifted': {'mesh_ent_suffix': 'lifted', 'comp_suffix': ''},
+                    'flat':   {'mesh_ent_suffix': 'flat',   'comp_suffix': '_flat'},
+                    'high':   {'mesh_ent_suffix': 'high',   'comp_suffix': '_high'},
+                }
+                handle_id = 0
+                for color in item_colors:
+                    for user_fs, info in STATE_MAP_APP.items():
+                        if user_fs not in active_foot_states:
+                            continue
+                        state_name = info['mesh_ent_suffix']
+                        comp_suffix = info['comp_suffix']
+                        appear_name = f"{entity_name}_{state_name}_{color}"
+                        mesh_ent_file = f"{mod_base}_{name}_{state_name}_mesh.ent"
+                        comp_name = f"{garment_prefix}_{name}{comp_suffix}" if garment_prefix else f"{name}{comp_suffix}"
+
+                        state_def = {
+                            "$type": "appearanceAppearanceDefinition",
+                            "censorFlags": 0,
+                            "components": [],
+                            "cookedDataPathOverride": {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"},
+                            "forcedLodDistance": 0,
+                            "hitRepresentationOverrides": [],
+                            "inheritedVisualTags": {"$type": "redTagList", "tags": []},
+                            "looseDependencies": [],
+                            "name": {"$type": "CName", "$storage": "string", "$value": appear_name},
+                            "parametersBuffer": {"$type": "entEntityParametersBuffer", "parameterBuffers": []},
+                            "partsMasks": [],
+                            "partsOverrides": [
+                                {
+                                    "$type": "appearanceAppearancePartOverrides",
+                                    "componentsOverrides": [
+                                        {
+                                            "$type": "appearancePartComponentOverrides",
+                                            "acceptDismemberment": 1,
+                                            "chunkMask": "9223372036854775807",
+                                            "componentName": {"$type": "CName", "$storage": "string", "$value": comp_name},
+                                            "initialTransform": {
+                                                "$type": "Transform",
+                                                "orientation": {"$type": "Quaternion", "i": 0, "j": 0, "k": 0, "r": 1},
+                                                "position": {"$type": "Vector4", "W": 0, "X": 0, "Y": 0, "Z": 0}
+                                            },
+                                            "meshAppearance": {"$type": "CName", "$storage": "string", "$value": "default"},
+                                            "useCustomTransform": 0,
+                                            "visualScale": {"$type": "Vector3", "X": 0, "Y": 0, "Z": 0}
+                                        }
+                                    ],
+                                    "partResource": {
+                                        "DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mesh_ent_file}"},
+                                        "Flags": "Default"
+                                    }
+                                }
+                            ],
+                            "partsValues": [
+                                {
+                                    "$type": "appearanceAppearancePart",
+                                    "resource": {"DepotPath": {"$type": "ResourcePath", "$storage": "string", "$value": f"{mod_base}\\{name}\\{mesh_ent_file}"}, "Flags": "Default"}
+                                }
+                            ],
+                            "parentAppearance": {"$type": "CName", "$storage": "string", "$value": "None"},
+                            "visualTags": {"$type": "redTagList", "tags": []}
+                        }
+                        app_apps.append({"HandleId": str(handle_id), "Data": state_def})
+                        handle_id += 1
+
             with open(out_dir / f"{mod_base}_{name}_appearance.app.json", 'w') as f:
                 json.dump(app, f, indent=2)
 
-            # No per-color appearance files needed! The single default appearance
-            # definition inside the root .app file is sufficient for dynamic variants.
-
-            # 3. Assemble Mesh Entity (Dynamic Variants Support)
+            # 3. Assemble Mesh Entity
             mesh_ent = copy.deepcopy(tpl_mesh_ent)
-            mesh_appearance = "*{variant}"
+            mesh_appearance = "default" if is_foot_state else "*{variant}"
             GARMENT_TYPES = ('entGarmentSkinnedMeshComponent', 'entSkinnedMeshComponent')
-
-            # GarmentSupport component prefix map (per redmodding wiki).
-            # The game calculates garment scores from the FIRST characters of the
-            # component name. Without the correct prefix, items get score 0 and
-            # cause distortion/clipping when combined with other clothing.
-            # l1_ = Legs (pants), t1_ = Torso inner (shirts), t2_ = Torso outer (jackets),
-            # s1_ = Shoes.
-            SLOT_TO_GARMENT_PREFIX = {
-                'GenericLegClothing': 'l1',
-                'GenericInnerChestClothing': 't1',
-                'GenericOuterChestClothing': 't2',
-                'GenericTorsoClothing': 't1',
-                'GenericFootClothing': 's1',
-                'GenericHeadClothing': 'h1',
-            }
-            item_slot = it.get('slot', '')
-            garment_prefix = SLOT_TO_GARMENT_PREFIX.get(item_slot, '')
 
             def _patch_components(ent_chunk, comp_name, depot_path):
                 # Helper to rename components and point them at the right mesh.
@@ -1240,128 +1326,53 @@ class PipelineWorker:
                 mesh_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{{body}}.mesh"
                 comp_base = f"{garment_prefix}_{name}_mesh" if garment_prefix else f"{name}_mesh"
                 _patch_components(mesh_ent['Data']['RootChunk'], comp_base, mesh_depot)
+                with open(out_dir / f"{mod_base}_{name}_mesh_entity.ent.json", 'w') as f:
+                    json.dump(mesh_ent, f, indent=2)
             else:
-                # Foot state items get duplicate components inside the SINGLE mesh entity,
-                # conditionally loaded by ArchiveXL via suffixes on the component name.
-                # ArchiveXL's LegsState appends one of 4 suffixes: &Flat, &Lifted, &FlatShoes, &HighHeels
-
-                # Determine which of the modder's variants to use for each of the 4 game states.
-                # Fallbacks are used if the modder didn't provide a specific state.
-                def best_match(preferred, alternatives):
-                    if preferred in active_foot_states: return preferred
-                    for alt in alternatives:
-                        if alt in active_foot_states: return alt
-                    return active_foot_states[0]
-
-                game_state_to_fs = {
-                    '&Lifted': best_match('lifted', ['flat', 'heel']),
-                    '&Flat': best_match('flat', ['lifted', 'heel']),
-                    '&FlatShoes': best_match('flat', ['lifted', 'heel']),
-                    '&HighHeels': best_match('heel', ['lifted', 'flat'])
+                # Foot-state items: generate 3 SEPARATE mesh entity files,
+                # one per state (lifted, flat, high). Each has ONE plainly-named
+                # component — matching the reference mod (Hyst's Fishnet Tights) architecture.
+                # No &Lifted/&Flat/&FlatShoes/&HighHeels suffixes on component names.
+                STATE_MAP = {
+                    'lifted': {'mesh_stem': 'lifted', 'comp_suffix': ''},
+                    'flat':   {'mesh_stem': 'flat',   'comp_suffix': '_flat'},
+                    'high':   {'mesh_stem': 'heel',   'comp_suffix': '_high'},
                 }
 
-                orig_comps = copy.deepcopy(mesh_ent['Data']['RootChunk'].get('components', []))
-                orig_chunks = copy.deepcopy(mesh_ent['Data']['RootChunk'].get('compiledData', {}).get('Data', {}).get('Chunks', []))
+                for state_name, info in STATE_MAP.items():
+                    if state_name not in active_foot_states:
+                        continue
 
-                mesh_ent['Data']['RootChunk']['components'] = []
-                if 'compiledData' in mesh_ent['Data']['RootChunk']:
-                    mesh_ent['Data']['RootChunk']['compiledData']['Data']['Chunks'] = []
+                    state_ent = copy.deepcopy(tpl_mesh_ent)
+                    mesh_stem = info['mesh_stem']
+                    comp_suffix = info['comp_suffix']
+                    mesh_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{mesh_stem}_{{body}}.mesh"
+                    comp_name = f"{garment_prefix}_{name}{comp_suffix}" if garment_prefix else f"{name}{comp_suffix}"
+                    _patch_components(state_ent['Data']['RootChunk'], comp_name, mesh_depot)
 
-                # Keep non-mesh components exactly once
-                non_mesh_comps = [c for c in orig_comps if c.get('$type') not in GARMENT_TYPES]
-                non_mesh_chunks = [c for c in orig_chunks if c.get('$type') not in GARMENT_TYPES]
-                mesh_ent['Data']['RootChunk']['components'].extend(non_mesh_comps)
-                if 'compiledData' in mesh_ent['Data']['RootChunk']:
-                    mesh_ent['Data']['RootChunk']['compiledData']['Data']['Chunks'].extend(non_mesh_chunks)
+                    out_name = f"{mod_base}_{name}_{state_name}_mesh.ent.json"
+                    with open(out_dir / out_name, 'w') as f:
+                        json.dump(state_ent, f, indent=2)
 
-                mesh_comps = [c for c in orig_comps if c.get('$type') in GARMENT_TYPES]
-                mesh_chunks = [c for c in orig_chunks if c.get('$type') in GARMENT_TYPES]
+                    self.log(f"  Mesh entity: wrote {out_name} (component: {comp_name})", 'info')
 
-                # Track the highest existing CRUID to generate unique IDs for duplicated components.
-                # Without unique CRUIDs, the game crashes on equip (per redmodding wiki:
-                # "My garment support explodes on contact with another item! It's not doing
-                # that to spite you. Most likely, you have a non-unique component ID").
-                existing_cruids = set()
-                for c in orig_chunks:
-                    cid = c.get('id')
-                    if cid is not None:
-                        existing_cruids.add(int(cid))
-                next_cruid = max(existing_cruids) + 1 if existing_cruids else 2184094197627056160
-
-                for suffix, fs in game_state_to_fs.items():
-                    fs_depot = f"*{mod_base}\\{name}\\meshes\\{name}_{fs}_{{body}}.mesh"
-                    comp_name = f"{garment_prefix}_{name}_mesh{suffix}" if garment_prefix else f"{name}_mesh{suffix}"
-
-                    fs_comps = copy.deepcopy(mesh_comps)
-                    fs_chunks = copy.deepcopy(mesh_chunks)
-
-                    # Assign a unique CRUID to this foot-state variant
-                    for fc in fs_chunks:
-                        fc['id'] = str(next_cruid)
-                        next_cruid += 1
-
-                    temp_chunk = {'components': fs_comps, 'compiledData': {'Data': {'Chunks': fs_chunks}}}
-                    _patch_components(temp_chunk, comp_name, fs_depot)
-
-                    mesh_ent['Data']['RootChunk']['components'].extend(temp_chunk['components'])
-                    if 'compiledData' in mesh_ent['Data']['RootChunk']:
-
-                        mesh_ent['Data']['RootChunk']['compiledData']['Data']['Chunks'].extend(temp_chunk['compiledData']['Data']['Chunks'])
-                        # Update CruidDict to include the new unique CRUIDs
-                        cruid_dict = mesh_ent['Data']['RootChunk']['compiledData']['Data'].setdefault('CruidDict', {})
-                        for i, fc in enumerate(fs_chunks):
-                            # HandleId maps to CRUID. Start from existing max + offset.
-                            handle_id = str(len(orig_chunks) + i)
-                            cruid_dict[handle_id] = fc['id']
-
-                self.log(f"  Mesh entity: injected 4 dynamic variants mapping to ({', '.join(active_foot_states)})", 'info')
-
-            with open(out_dir / f"{mod_base}_{name}_mesh_entity.ent.json", 'w') as f:
-                json.dump(mesh_ent, f, indent=2)
-
-            # --- DIAGNOSTIC VALIDATION (Handoff #4 Issue 2) ---
-            # For every depot path referenced by the mesh entity's components,
-            # verify the corresponding .mesh file actually exists on disk.
-            # This catches the "multi-foot-state invisible" bug where the entity
-            # references meshes that were never generated (e.g. because the
-            # modder didn't provide a GLB for every checked state, or because
-            # active_suffixes/body-type filtering silently dropped one).
-            if is_foot_state:
-                # Collect all depot paths from the mesh entity components
-                depot_paths = set()
-                for comp in mesh_ent['Data']['RootChunk'].get('components', []):
-                    mesh_path = comp.get('mesh', {}).get('DepotPath', {}).get('$value', '')
-                    if mesh_path and '{body}' in mesh_path:
-                        # Expand {body} to all active body suffixes
-                        for body_tok in [tok for _, tok in body_suffixes]:
-                            expanded = mesh_path.replace('{body}', body_tok)
-                            depot_paths.add(expanded)
-
-                # Check each expanded path against the archive directory
+                # Diagnostic: verify all referenced .mesh files exist on disk
                 mesh_dir = out_dir / 'meshes'
                 missing = []
-                for depot in sorted(depot_paths):
-                    # Convert depot path to filename: "couture_doll\bottom\meshes\bottom_flat_angel.mesh"
-                    # -> "bottom_flat_angel.mesh"
-                    filename = depot.split('\\')[-1]
-                    full_path = mesh_dir / filename
-                    if not full_path.exists():
-                        missing.append(filename)
-
+                for state_name, info in STATE_MAP.items():
+                    if state_name not in active_foot_states:
+                        continue
+                    mesh_stem = info['mesh_stem']
+                    for _, body_tok in body_suffixes:
+                        mesh_file = f"{name}_{mesh_stem}_{body_tok}.mesh"
+                        if not (mesh_dir / mesh_file).exists():
+                            missing.append(mesh_file)
                 if missing:
-                    self.log(
-                        f"  ⚠ DIAGNOSTIC: {len(missing)} mesh file(s) referenced by mesh entity but NOT found in {mesh_dir}:",
-                        'warn'
-                    )
-                    for m in missing[:20]:  # Cap output to 20
+                    self.log(f"  ⚠ DIAGNOSTIC: {len(missing)} mesh file(s) NOT found in {mesh_dir}:", 'warn')
+                    for m in missing[:20]:
                         self.log(f"    - {m}", 'warn')
-                    if len(missing) > 20:
-                        self.log(f"    ... and {len(missing) - 20} more", 'warn')
                 else:
-                    self.log(
-                        f"  ✓ DIAGNOSTIC: All {len(depot_paths)} mesh files exist for {name}",
-                        'info'
-                    )
+                    self.log(f"  ✓ DIAGNOSTIC: All mesh files exist for {name}", 'info')
 
             # 4. Copy template mesh binaries for each body suffix
             #    .mesh.json can't be compiled by WolvenKit CLI 8.18.1,
@@ -2811,6 +2822,7 @@ class CPMPApp:
                         'material_settings': ms_dict,
                         'has_foot_variants': w['has_foot_variants'].get(),
                         'apply_garment_support': w['apply_garment_support'].get(),
+                        'disable_garment_support': w['disable_garment_support'].get(),
                     })
             else:
                 for s in items:

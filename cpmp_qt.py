@@ -326,6 +326,30 @@ class ItemCard(QGroupBox):
             no_mat_lbl.setProperty("role", "dim")
             form.addRow("Materials:", no_mat_lbl)
 
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setStyleSheet("background:#28284a;")
+        form.addRow(sep2)
+
+        self.apply_garment_support = QCheckBox("Apply GarmentSupport from GLB")
+        self.apply_garment_support.setChecked(item.get('apply_garment_support', False))
+        self.apply_garment_support.setToolTip(
+            "Read the GarmentSupport morph target from the GLB and write it into the mesh's morphOffsets buffer.\n\n"
+            "LEAVE OFF if you apply garment support manually in Blender (recommended — the game will auto-shrink "
+            "under jackets/boots based on garment score, but you control the deformation).\n\n"
+            "When OFF, the pipeline writes a zero-filled morphOffsets buffer so the game doesn't crash."
+        )
+        form.addRow(self.apply_garment_support)
+
+        self.disable_garment_support = QCheckBox("Disable GarmentSupport (stopgap)")
+        self.disable_garment_support.setChecked(item.get('disable_garment_support', False))
+        self.disable_garment_support.setToolTip(
+            "STOPGAP OPTION: Disables GarmentSupport entirely. The mesh will NOT auto-shrink under other items.\n\n"
+            "Use this if the mesh 'explodes' or looks distorted when equipped alongside other clothing items.\n\n"
+            "This is a temporary fix while the GarmentSupport color attribute requirements are being resolved."
+        )
+        form.addRow(self.disable_garment_support)
+
         root.addLayout(form)
 
     def to_active_item(self) -> dict:
@@ -356,6 +380,8 @@ class ItemCard(QGroupBox):
             'two_sided_materials': two_sided,
             'material_settings': mat_settings,
             'has_foot_variants': self.has_foot_variants.isChecked(),
+            'apply_garment_support': self.apply_garment_support.isChecked(),
+            'disable_garment_support': self.disable_garment_support.isChecked(),
         }
 
 
