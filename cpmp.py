@@ -1264,7 +1264,7 @@ class PipelineWorker:
                                                 "orientation": {"$type": "Quaternion", "i": 0, "j": 0, "k": 0, "r": 1},
                                                 "position": {"$type": "Vector4", "W": 0, "X": 0, "Y": 0, "Z": 0}
                                             },
-                                            "meshAppearance": {"$type": "CName", "$storage": "string", "$value": "default"},
+                                             "meshAppearance": {"$type": "CName", "$storage": "string", "$value": color},
                                             "useCustomTransform": 0,
                                             "visualScale": {"$type": "Vector3", "X": 0, "Y": 0, "Z": 0}
                                         }
