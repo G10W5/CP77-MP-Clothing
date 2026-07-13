@@ -6,6 +6,12 @@
 
 A streamlined GUI tool to compile 3D model exports (GLB/GLTF) into fully functioning Cyberpunk 2077 clothing mods - with auto-generated names, textures, icons, and spawn commands.
 
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Cyberpunk 2077](https://img.shields.io/badge/Cyberpunk%202077-2.12%2B-ff0055?style=for-the-badge)](https://www.cyberpunk.net/)
+[![UI](https://img.shields.io/badge/UI-PySide6%20%2F%20Qt-blueviolet?style=for-the-badge&logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
+[![ArchiveXL](https://img.shields.io/badge/mod-ArchiveXL-e5a93b?style=for-the-badge)](https://github.com/psiberx/cp2077-archive-xl)
+[![TweakXL](https://img.shields.io/badge/mod-TweakXL-d86524?style=for-the-badge)](https://github.com/psiberx/cp2077-tweak-xl)
+
 </div>
 
 ## Features
